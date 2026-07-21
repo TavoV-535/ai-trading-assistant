@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.core.app import create_app
+from app.core.bootstrap import bootstrap, teardown
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+async def test_bootstrap_loads_plugins_and_teardown_is_clean(settings):
+    state = await bootstrap(settings, project_root=PROJECT_ROOT)
+
+    assert "EMA" in state.plugin_registry.plugins
+    assert state.plugin_registry.failed == {}
+    assert await state.database.health() is True
+
+    await teardown(state)
+
+
+def test_health_endpoint_reports_healthy(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "healthy"
+        assert body["database"] == "healthy"
+        assert body["plugins"]["EMA"] == "degraded"  # no market data fed yet in this test
+        assert body["plugins_failed_to_load"] == []
+
+
+def test_plugins_endpoint_lists_ema(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/plugins")
+        assert response.status_code == 200
+        body = response.json()
+        assert "EMA" in body["loaded"]
+        assert body["loaded"]["EMA"]["category"] == "indicators"
+        assert body["failed"] == {}

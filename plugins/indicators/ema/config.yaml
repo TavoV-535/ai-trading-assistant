@@ -1,0 +1,4 @@
+# Default config for the EMA indicator plugin.
+# Overridable per-deployment without touching plugin code.
+fast: 20
+slow: 50

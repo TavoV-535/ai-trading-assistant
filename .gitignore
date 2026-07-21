@@ -1,0 +1,32 @@
+# secrets
+.env
+*.pem
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# data
+*.db
+*.sqlite3
+data/
+logs/
+journal_screenshots/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
