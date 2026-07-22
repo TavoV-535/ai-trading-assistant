@@ -10,17 +10,21 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-3 complete: Core Architecture, Discord Bot Skeleton, and the
-Indicator Library.**
+**Milestones 1-4 complete: Core Architecture, Discord Bot Skeleton, the
+Indicator Library, and the Strategy Engine + Evidence Aggregator.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
 bot connects, exposes `/help` and a reference `/ping` command, and routes
 every command through the same event-driven, plugin-first architecture
-(Milestone 2); and 14 indicator plugins (EMA, SMA, VWAP, RSI, MACD, ATR,
-ADX, Bollinger, Supertrend, OBV, CCI, Ichimoku, Donchian, Volume Profile)
-share one calculation library and publish evidence, never a signal
-(Milestone 3). See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's
+(Milestone 2); 14 indicator plugins (EMA, SMA, VWAP, RSI, MACD, ATR, ADX,
+Bollinger, Supertrend, OBV, CCI, Ichimoku, Donchian, Volume Profile) share
+one calculation library and publish evidence, never a signal (Milestone 3);
+and an Evidence Aggregator normalizes/dedupes/decays that evidence for two
+downstream consumers — a declarative, YAML-only Strategy Engine (knows
+nothing about any specific indicator) and the Reasoning Engine, which now
+mentions matched strategies by name in its non-directive synthesis
+(Milestone 4). See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's
 done and what's next.
 
 ## Quick start (Docker — recommended)
@@ -43,6 +47,7 @@ app, and (if a token is set) connects the Discord bot. Check it's alive:
 ```bash
 curl http://localhost:8000/health   # includes "discord": "connected" | "connecting" | "not_configured"
 curl http://localhost:8000/plugins
+curl http://localhost:8000/strategies
 ```
 
 In Discord, try `/ping` and `/help`.
@@ -76,7 +81,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-111 tests, ~93% coverage of `app/` as of Milestone 3. Live Discord gateway
+144 tests, ~94% coverage of `app/` as of Milestone 4. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -93,10 +98,13 @@ app/
   discord/      # TradingBot + DiscordCommandPlugin contract + command dispatch
   reasoning/    # Reasoning Engine + Claude provider
   db/           # SQLAlchemy models, Repository pattern, event persistence
-  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins)
+  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies)
   indicators/   # shared calculation library every indicator plugin uses (not a plugin itself)
-plugins/        # actual plugins live here, auto-discovered — see docs/PLUGIN_GUIDE.md
+  aggregation/  # Evidence Aggregator — dedup/freshness/conflict detection (not a plugin itself)
+  strategy/     # Strategy Engine — compiles declarative YAML into a rule graph (not a plugin itself)
+plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
+  strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
   commands/ping/
 alembic/        # migrations (async, driven by app.config settings)
 docker/         # Dockerfile, docker-compose.yml, entrypoint.sh

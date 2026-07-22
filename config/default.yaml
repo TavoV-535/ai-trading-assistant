@@ -67,3 +67,11 @@ api:
 
 discord:
   command_prefix: "/"
+
+aggregation:
+  # how long (seconds) a piece of evidence stays "fresh" / active before it
+  # decays out of the Strategy Engine's and Reasoning Engine's view
+  freshness_window_seconds: 900
+  # bounded per-symbol history the aggregator retains (full sequence, not
+  # just the fresh subset)
+  max_history_per_symbol: 500

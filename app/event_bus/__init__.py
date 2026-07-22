@@ -7,6 +7,7 @@ from app.event_bus.events import (
     DailySummary,
     EarningsReleased,
     Event,
+    EvidenceAggregated,
     EvidenceProduced,
     IndicatorCalculated,
     JournalCreated,
@@ -41,6 +42,7 @@ __all__ = [
     "DailySummary",
     "RiskWarning",
     "EvidenceProduced",
+    "EvidenceAggregated",
     "CommandInvoked",
     "CommandFailed",
 ]

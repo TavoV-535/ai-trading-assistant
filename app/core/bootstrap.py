@@ -12,6 +12,7 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
+from app.aggregation.aggregator import EvidenceAggregator
 from app.config import get_settings
 from app.core.state import AppState
 from app.db.base import Database
@@ -22,6 +23,7 @@ from app.logging import configure_logging, get_logger
 from app.plugins.registry import PluginRegistry
 from app.reasoning.engine import ReasoningEngine
 from app.reasoning.providers.claude_provider import ClaudeProvider
+from app.strategy.engine import StrategyEngine
 
 log = get_logger(__name__)
 
@@ -46,6 +48,18 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
 
     database = Database(settings)
     attach_event_logger(event_bus, database)
+
+    # Evidence Aggregator sits between every evidence producer (indicator
+    # plugins today; news/earnings/macro/scanners later) and everything
+    # that consumes evidence. It's the single interface both the Strategy
+    # Engine and the Reasoning Engine subscribe to — neither subscribes to
+    # raw EvidenceProduced directly. See app/aggregation/aggregator.py.
+    evidence_aggregator = EvidenceAggregator(settings)
+    evidence_aggregator.attach(event_bus)
+
+    strategy_engine = StrategyEngine(settings)
+    strategy_engine.load(root)
+    strategy_engine.attach(event_bus)
 
     provider = None
     if settings.reasoning.enabled and settings.has_anthropic_key:
@@ -85,6 +99,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         "bootstrap_complete",
         plugins_loaded=len(plugin_registry.plugins),
         plugins_failed=len(plugin_registry.failed),
+        strategies_loaded=len(strategy_engine.strategies),
         discord_enabled=discord_bot is not None,
     )
 
@@ -93,6 +108,8 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         event_bus=event_bus,
         database=database,
         plugin_registry=plugin_registry,
+        evidence_aggregator=evidence_aggregator,
+        strategy_engine=strategy_engine,
         reasoning_engine=reasoning_engine,
         project_root=root,
         discord_bot=discord_bot,

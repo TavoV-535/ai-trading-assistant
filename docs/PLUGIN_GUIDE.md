@@ -255,3 +255,97 @@ See `tests/test_ping_plugin.py` and `tests/test_discord_dispatch.py` for
 complete worked examples, including how `tests/test_discord_bot.py` verifies
 the bridge to a real `discord.Interaction` with a lightweight fake object —
 without ever needing a network connection to Discord.
+
+---
+
+# Writing a strategy
+
+A strategy is **pure data** — a YAML file, never a Python `plugin.py`. It
+never references a specific indicator's implementation, only the evidence
+titles that indicator happens to publish. This is what makes "no strategy
+should require Python modifications to support new indicators" true:
+dropping in a new indicator plugin makes its evidence titles usable in any
+strategy's `required`/`optional` list immediately, with zero code changes.
+
+## 1. Create the folder
+
+```
+plugins/strategies/momentum_breakout/
+    strategy.yaml
+```
+
+## 2. Write the declarative definition
+
+```yaml
+# plugins/strategies/momentum_breakout/strategy.yaml
+name: Momentum Breakout
+
+required:
+  - Bullish EMA Cross
+  - Donchian Channel Breakout (New High)
+
+optional:
+  - Bullish SMA Cross
+  - CCI Breakout Above 100
+
+minimum_score: 32
+
+repeat_policy:
+  Donchian: after_pullback
+```
+
+- **`required`** — evidence titles (exact match, case-insensitive) that
+  must ALL be present and fresh (per the Evidence Aggregator) for this
+  strategy to be eligible to match at all.
+- **`optional`** — evidence titles that aren't required, but whose `score`
+  counts toward `minimum_score` when present. Lets a strategy reward extra
+  confirmation without hard-requiring it.
+- **`minimum_score`** — the summed `score` of present required + optional
+  evidence must reach this. Missing any required title means the strategy
+  can never match regardless of score.
+- **`repeat_policy`** — maps an evidence *source* (not title) to how
+  repeated occurrences from that source should be interpreted:
+  `every_breakout` (default — accept any occurrence), `first_breakout`
+  (only the first occurrence in its current sequence), or `after_pullback`
+  (like `first_breakout`, but also excludes a cold-start occurrence with no
+  real prior sequence behind it). This only has an effect on evidence that
+  carries `is_first_in_sequence` / `is_first_ever` in its `metadata` (see
+  `plugins/indicators/donchian/plugin.py` for the reference
+  implementation of that convention) — evidence without it always passes,
+  regardless of policy.
+
+## 3. That's it — no Python, no registration step
+
+`StrategyEngine.load()` scans `plugins/strategies/*/strategy.yaml` at
+bootstrap and compiles each one into a `CompiledStrategy` (frozensets +
+a score threshold, built once — never re-parsed per evaluation). A broken
+YAML file is logged and skipped, the same isolation policy
+`PluginRegistry.load_all` uses for a broken plugin — one strategy author's
+typo can't take down every other strategy.
+
+## 4. What you must never do
+
+- Never write `if evidence.source == "EMA": ...` or reference any specific
+  indicator's Python module from a strategy or from `app/strategy/` itself
+  — a strategy only ever names evidence by `title` (and, for repeat
+  handling, `source`), the same vocabulary any evidence producer speaks.
+- Never expect `optional` entries to be required — they only add to the
+  score total when present. If something must always be there, put it in
+  `required`.
+
+## 5. Test it
+
+```python
+from pathlib import Path
+from app.strategy.loader import load_strategies
+from app.strategy.engine import StrategyEngine
+
+def test_momentum_breakout_loads():
+    compiled = load_strategies(Path("plugins/strategies"))
+    assert any(s.name == "Momentum Breakout" for s in compiled)
+```
+
+See `tests/test_strategy_engine.py` for compilation/evaluation/repeat-policy
+tests, and `tests/test_pipeline_integration.py` for a full, real
+Indicator → Evidence Aggregator → Strategy Engine → Reasoning Engine run
+using this exact reference strategy.

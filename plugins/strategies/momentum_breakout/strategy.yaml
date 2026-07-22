@@ -1,0 +1,27 @@
+# Reference strategy — demonstrates the full declarative shape end to end,
+# the same role EMA plays for indicators and Ping plays for Discord
+# commands. Every title below is the exact Evidence.title a real indicator
+# plugin publishes (see plugins/indicators/*/plugin.py) — this file is
+# pure data; adding it requires zero Python changes anywhere.
+name: Momentum Breakout
+
+required:
+  - Bullish EMA Cross
+  - Donchian Channel Breakout (New High)
+
+optional:
+  - Bullish SMA Cross
+  - CCI Breakout Above 100
+
+# EMA (score 15) + Donchian (score 10) alone = 25, below this threshold —
+# at least one optional confirmation (SMA score 10, or CCI score 7) has to
+# also be present and fresh for this strategy to actually match.
+minimum_score: 32
+
+# Donchian's own math fires a fresh "new high" every single bar of a
+# sustained uptrend (see plugins/indicators/donchian/plugin.py's
+# repeat_policy metadata) — mathematically correct, but for THIS strategy
+# only the first breakout following a genuine pullback should count toward
+# a match, not every consecutive new high in an already-running trend.
+repeat_policy:
+  Donchian: after_pullback

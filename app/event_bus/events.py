@@ -207,11 +207,33 @@ class CommandFailed(Event):
 
 class EvidenceProduced(Event):
     """Wraps a single :class:`~app.evidence.schema.Evidence` object as an event
-    so plugins publish it exactly like anything else — the Reasoning Engine
-    subscribes to this the same way any other plugin subscribes to
-    ``MarketDataUpdated``."""
+    so plugins publish it exactly like anything else — the Evidence
+    Aggregator subscribes to this the same way any other plugin subscribes
+    to ``MarketDataUpdated``."""
 
     evidence: Evidence
+
+
+class EvidenceAggregated(Event):
+    """Published by the Evidence Aggregator (`app/aggregation/`) every time
+    it processes an ``EvidenceProduced`` event — this is the single
+    interface both the Strategy Engine and the Reasoning Engine consume
+    instead of subscribing to raw ``EvidenceProduced`` directly.
+
+    ``evidence`` is the newly-arrived, unmodified evidence. ``enrichment``
+    carries aggregation metadata about it (occurrence count, freshness,
+    whether it's a duplicate confirmation, ...). ``active_evidence`` is the
+    deduped, currently-fresh snapshot for this symbol at the moment this
+    event was published — nothing in the original event stream is
+    discarded (the aggregator's full history is queryable separately), this
+    is just the "current picture" downstream systems reason over.
+    """
+
+    symbol: str
+    evidence: Evidence
+    enrichment: dict[str, Any] = Field(default_factory=dict)
+    active_evidence: list[Evidence] = Field(default_factory=list)
+    has_conflict: bool = False
 
 
 EVENT_TYPES: dict[str, type[Event]] = {
@@ -232,6 +254,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         DailySummary,
         RiskWarning,
         EvidenceProduced,
+        EvidenceAggregated,
         CommandInvoked,
         CommandFailed,
     )

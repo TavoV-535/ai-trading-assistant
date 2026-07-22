@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from app.evidence.schema import Evidence
 from app.event_bus.bus import EventBus
-from app.event_bus.events import EvidenceProduced
+from app.event_bus.events import EvidenceAggregated, StrategyMatched
 from app.logging import get_logger
 from app.reasoning.providers.base import ReasoningProvider
 
@@ -81,21 +81,41 @@ class ReasoningEngine:
         self._provider = provider
         self._max_evidence_per_symbol = max_evidence_per_symbol
         self._evidence_by_symbol: dict[str, list[Evidence]] = defaultdict(list)
+        self._matched_strategies_by_symbol: dict[str, list[StrategyMatched]] = defaultdict(list)
 
     def attach(self, event_bus: EventBus) -> None:
-        """Subscribe to EvidenceProduced so evidence accumulates automatically."""
-        event_bus.subscribe(EvidenceProduced, self._on_evidence, name="reasoning_engine")
+        """Subscribe to the Evidence Aggregator's output — never raw
+        ``EvidenceProduced`` directly, matching PROJECT.md's requirement
+        that the aggregator be the single interface both the Strategy
+        Engine and the Reasoning Engine consume. Also subscribes to
+        ``StrategyMatched`` so a declarative strategy firing shows up in
+        this engine's synthesis alongside raw evidence."""
+        event_bus.subscribe(EvidenceAggregated, self._on_evidence_aggregated, name="reasoning_engine")
+        event_bus.subscribe(StrategyMatched, self._on_strategy_matched, name="reasoning_engine_strategies")
 
-    async def _on_evidence(self, event: EvidenceProduced) -> None:
-        evidence = event.evidence
-        symbol = evidence.symbol or "UNKNOWN"
-        bucket = self._evidence_by_symbol[symbol]
-        bucket.append(evidence)
+    async def _on_evidence_aggregated(self, event: EvidenceAggregated) -> None:
+        # The aggregator already dedupes and decays evidence for us — this
+        # engine always reasons over exactly the current fresh/deduped
+        # snapshot for the symbol, rather than accumulating every historical
+        # occurrence forever (freshness/decay is the aggregator's job, not
+        # this engine's).
+        symbol = event.symbol
+        bucket = list(event.active_evidence)
         if len(bucket) > self._max_evidence_per_symbol:
-            del bucket[: len(bucket) - self._max_evidence_per_symbol]
+            bucket = bucket[-self._max_evidence_per_symbol :]
+        self._evidence_by_symbol[symbol] = bucket
+
+    async def _on_strategy_matched(self, event: StrategyMatched) -> None:
+        bucket = self._matched_strategies_by_symbol[event.symbol]
+        bucket.append(event)
+        if len(bucket) > 20:
+            del bucket[: len(bucket) - 20]
 
     def evidence_for(self, symbol: str) -> list[Evidence]:
         return list(self._evidence_by_symbol.get(symbol, []))
+
+    def matched_strategies_for(self, symbol: str) -> list[StrategyMatched]:
+        return list(self._matched_strategies_by_symbol.get(symbol, []))
 
     async def analyze(self, symbol: str) -> ReasoningOutput:
         """Answer the project's core questions for ``symbol`` from accumulated evidence."""
@@ -126,6 +146,11 @@ class ReasoningEngine:
     async def _ai_summary(self, symbol: str, evidence: list[Evidence]) -> ReasoningOutput:
         payload = [e.model_dump(mode="json") for e in evidence]
         prompt = f"Symbol: {symbol}\n\nEvidence:\n{json.dumps(payload, indent=2)}"
+
+        matched = self.matched_strategies_for(symbol)
+        if matched:
+            strategy_lines = "\n".join(f"- {m.strategy} (score {m.score}, {m.evidence_count} evidence)" for m in matched)
+            prompt += f"\n\nDeclarative strategies currently matched for this symbol:\n{strategy_lines}"
 
         raw = await self._provider.generate(
             system=_SYSTEM_PROMPT,
@@ -173,6 +198,11 @@ class ReasoningEngine:
             f"Overall lean: {lean}. Most recent: {titles}."
         )
 
+        matched = self.matched_strategies_for(symbol)
+        if matched:
+            names = ", ".join(f"{m.strategy} (score {m.score})" for m in matched)
+            summary += f" Matched strategies: {names}."
+
         return ReasoningOutput(
             market_summary=summary,
             trade_thesis=(
@@ -182,7 +212,7 @@ class ReasoningEngine:
             risk_assessment="Not assessed — configure ANTHROPIC_API_KEY to enable full risk analysis.",
             alternative_scenario="Not assessed — evidence-only mode.",
             confidence=round(avg_confidence, 2),
-            suggested_strategies=[],
+            suggested_strategies=[m.strategy for m in matched],
             historical_similarity=None,
             evidence_count=len(evidence),
             source="evidence_only",

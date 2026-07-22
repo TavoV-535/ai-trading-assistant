@@ -105,24 +105,74 @@ CCI here use the breakout/continuation reading, not mean-reversion — and
 say so in their docstrings so it's an explicit, visible choice rather than
 a silent assumption.
 
+## Milestone 4 — Strategy Engine + Evidence Aggregator ✅ complete
+
+- **Evidence Aggregator** (`app/aggregation/`) — sits between every evidence
+  producer and everything that consumes evidence; the single interface both
+  the Strategy Engine and the Reasoning Engine subscribe to (neither
+  subscribes to raw `EvidenceProduced` directly). Deduplicates repeated
+  confirmations (keeping the occurrence count as metadata, never discarding
+  the original events — full history stays queryable via `.history()`),
+  decays evidence freshness linearly over `aggregation.freshness_window_seconds`
+  (900s default), and flags conflicting bullish/bearish evidence rather than
+  silently averaging it away. Publishes one `EvidenceAggregated` event per
+  incoming `EvidenceProduced`, carrying the original evidence, its
+  enrichment metadata, and the current deduped/fresh snapshot.
+- **Strategy Engine** (`app/strategy/`, `plugins/strategies/`) — strategies
+  are pure declarative YAML, never Python. `StrategyDefinition` (name,
+  required/optional evidence titles, minimum_score, per-source
+  repeat_policy) compiles once at load time into an immutable
+  `CompiledStrategy` (frozensets + a score threshold — the "rule graph,"
+  built once, not re-parsed per evaluation). Knows nothing about EMA, RSI,
+  MACD, or any other indicator — only reads `Evidence.title`/`.source`/
+  `.score`/`.direction`/`.metadata`, so a new indicator plugin's evidence is
+  usable by any strategy immediately, with zero changes here. Subscribes to
+  `EvidenceAggregated`, publishes `StrategyMatched` only on the
+  not-matched → matched transition (edge-triggered, same rule every
+  indicator plugin follows).
+- **Reference strategy**: `plugins/strategies/momentum_breakout/strategy.yaml`
+  — the same role `EMA` plays for indicators and `Ping` plays for Discord
+  commands.
+- **Donchian repeat_policy** (`plugins/indicators/donchian/`) — the plugin's
+  own math is never suppressed (a sustained trend still fires a fresh "new
+  high" breakout on every qualifying bar, which is mathematically correct).
+  What's configurable is how often the *plugin* publishes evidence about it
+  (`every_breakout` / `first_breakout` / `after_pullback`), and every
+  occurrence — published or not — is tagged with sequence metadata
+  (`breakout_sequence`, `bars_since_first_breakout`, `is_first_in_sequence`,
+  `is_first_ever`, `distance_from_channel`). That metadata convention is
+  also what the Strategy Engine's own `repeat_policy` filter reads, so a
+  strategy can reinterpret repeats differently than the plugin's own
+  publish policy — generic, not a Donchian special case.
+- Reasoning Engine updated to consume `EvidenceAggregated` + `StrategyMatched`
+  instead of raw `EvidenceProduced` — its synthesis now mentions matched
+  strategies by name, and `suggested_strategies` reflects real matches
+  instead of always being empty in evidence-only mode.
+- `GET /strategies` — loaded strategy definitions (required/optional
+  evidence, minimum score, repeat policy), mirroring `GET /plugins`.
+- 144 tests passing (33 new: 8 aggregator, 17 strategy engine, 6 Donchian
+  repeat-policy, 2 full-pipeline integration), ~94% coverage of `app/`,
+  ruff clean. Live-verified end to end: real indicator plugins → real
+  Evidence Aggregator → real Strategy Engine matching the real reference
+  strategy → real Reasoning Engine synthesis, all in one run (see the
+  Milestone 4 completion report for the transcript).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **Strategy Engine** — YAML/JSON strategy recipes that reference evidence
-   by category/source, a minimum-score gate, `StrategyMatched` events.
-2. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
+1. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
    small extension to `DiscordCommandPlugin` for declaring slash-command
    options): pulls evidence + reasoning output for a symbol, renders as an
    interactive message with buttons (Chart / News / History / Backtest /
    Journal / Watch / Dismiss).
-3. **Scanner Engine** — continuous per-minute evidence generation across a
+2. **Scanner Engine** — continuous per-minute evidence generation across a
    watchlist, multiple timeframes and asset classes.
-4. **News / Earnings / Macro engines** — each a plugin category, each only
+3. **News / Earnings / Macro engines** — each a plugin category, each only
    ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
    directive.
-5. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
+4. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach

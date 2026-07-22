@@ -11,11 +11,25 @@ from being able to reach into another.
 
 ```
 Discord  →  Command Engine  →  Event Bus  ┬→ Plugins
+                                            ├→ Evidence Aggregator → Strategy Engine
                                             ├→ Reasoning Engine
                                             └→ Database
                                                    │
                                         Discord Responses
 ```
+
+Evidence specifically flows through one more hop than the diagram above
+shows at a glance:
+
+```
+Indicator Plugins → EvidenceProduced → Evidence Aggregator
+    → EvidenceAggregated → Strategy Engine → StrategyMatched
+                         → Reasoning Engine → educational, non-directive analysis
+```
+
+Neither the Strategy Engine nor the Reasoning Engine subscribes to raw
+`EvidenceProduced` — the Evidence Aggregator is the single interface both
+of them consume (see below).
 
 ## Event Bus (`app/event_bus/`)
 
@@ -124,13 +138,94 @@ which would otherwise spam fresh evidence on every single tick a symbol
 spends in an extreme state. See `docs/PLUGIN_GUIDE.md` for how to add
 another one.
 
+## Evidence Aggregator (`app/aggregation/`)
+
+Sits between every evidence producer (14 indicator plugins today; news,
+earnings, macro, options flow, and scanners later) and everything that
+consumes evidence. It is the single interface both the Strategy Engine and
+the Reasoning Engine subscribe to — neither one ever subscribes to raw
+`EvidenceProduced` directly. Its job is explicitly **not** to suppress or
+discard market information; every `EvidenceProduced` event it ever receives
+is retained in a bounded per-symbol history (`EvidenceAggregator.history()`).
+What it adds on top of the raw stream:
+
+- **Deduplication** — repeated confirmations of the exact same finding
+  (same `source` + `title`) collapse to one representative in the "active"
+  snapshot, while the repeat count is preserved as enrichment metadata
+  (`occurrence_count`) rather than thrown away.
+- **Freshness / decay** — each piece of evidence has a freshness that
+  decays linearly to zero over `aggregation.freshness_window_seconds`
+  (900s / 15 minutes by default). Only fresh evidence appears in the
+  active snapshot; stale evidence ages out automatically instead of
+  accumulating forever.
+- **Conflict detection** — if the currently-fresh evidence for a symbol
+  contains both bullish and bearish directions, the snapshot is flagged
+  `has_conflict=True` rather than silently averaging them away.
+
+Every incoming `EvidenceProduced` results in exactly one `EvidenceAggregated`
+event, carrying the original evidence, its enrichment metadata, and the
+resulting deduped/fresh snapshot (`active_evidence`) for that symbol.
+`EvidenceAggregator.snapshot(symbol)` computes the same thing on demand,
+without waiting for the next event.
+
+## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
+
+A strategy is **pure declarative YAML**, never Python — `plugins/strategies/
+<name>/strategy.yaml`, parsed into a `StrategyDefinition` and compiled once
+(not re-parsed on every evaluation) into an immutable `CompiledStrategy`:
+`required`/`optional` evidence titles become frozensets (O(1) membership
+checks), and evaluation is a handful of set operations plus a score sum —
+the "rule graph" PROJECT.md asks for, built once at load time.
+
+**The Strategy Engine knows nothing about EMA, RSI, MACD, or any other
+specific indicator.** `app/strategy/compiler.py` and `app/strategy/engine.py`
+only ever read `Evidence.title`, `Evidence.source`, `Evidence.score`,
+`Evidence.direction`, and `Evidence.metadata` — the same vocabulary any
+future evidence producer already speaks. Dropping in a 15th indicator
+plugin makes its evidence titles usable by any strategy's `required`/
+`optional` lists with zero changes to this module.
+
+A strategy matches when every `required` evidence title is present (fresh,
+per the aggregator) **and** the summed score of present required +
+optional evidence reaches `minimum_score`. `StrategyEngine` subscribes to
+`EvidenceAggregated`, re-evaluates every compiled strategy per symbol on
+each update, and publishes `StrategyMatched` only on the transition from
+not-matched to matched — edge-triggered, the same "don't spam on every tick
+a condition continues to hold" rule every indicator plugin already follows.
+
+**Repeat-policy filtering.** Some evidence (Donchian breakouts, for
+instance) can legitimately fire on every single bar of a sustained trend —
+mathematically correct, not a bug (see the Indicator library section
+below). A strategy's `repeat_policy` maps an evidence *source* to
+`every_breakout` (default — accept every occurrence), `first_breakout`
+(only the first occurrence in its current sequence), or `after_pullback`
+(like `first_breakout`, but additionally excludes a cold-start first
+occurrence that has no real prior sequence to have pulled back from). This
+filter is generic and metadata-driven (`app/strategy/compiler.py::
+_passes_repeat_policy`) — it reads `metadata["is_first_in_sequence"]` /
+`metadata["is_first_ever"]`, a documented convention any evidence producer
+can opt into, not a Donchian-specific special case. Evidence that doesn't
+carry this metadata always passes (fails open) regardless of policy.
+
+The reference strategy, `plugins/strategies/momentum_breakout/`, is to the
+Strategy Engine what `EMA` is to indicators and `Ping` is to Discord
+commands — a real, working example new strategies can be modeled on. See
+`docs/PLUGIN_GUIDE.md` for the authoring guide.
+
 ## Reasoning Engine (`app/reasoning/`)
 
-Subscribes to `EvidenceProduced`, accumulates evidence per symbol (bounded
-per-symbol buffer), and on `analyze(symbol)` synthesizes everything
-gathered so far into a `ReasoningOutput`: market summary, trade thesis
-(framed as a hypothesis, never a directive), risk assessment, alternative
-scenario, confidence, suggested strategy archetypes, historical similarity.
+Subscribes to `EvidenceAggregated` (never raw `EvidenceProduced` — see
+Evidence Aggregator above) and `StrategyMatched`. On every
+`EvidenceAggregated` update it replaces its per-symbol evidence view with
+the aggregator's current deduped/fresh `active_evidence` — freshness/decay
+is the aggregator's job, so this engine always reasons over exactly
+"what's true right now," not an ever-growing pile of stale history. On
+`analyze(symbol)` it synthesizes everything currently gathered (plus any
+declaratively-matched strategies) into a `ReasoningOutput`: market summary,
+trade thesis (framed as a hypothesis, never a directive), risk assessment,
+alternative scenario, confidence, suggested strategy archetypes (populated
+from real `StrategyMatched` events when there are any), historical
+similarity.
 
 Three states, always explained rather than silent:
 
@@ -205,11 +300,12 @@ real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
 ## Core / lifecycle (`app/core/`)
 
 `bootstrap()` brings systems up in dependency order (logging → event bus →
-database → reasoning engine → plugin registry → Discord bot) and
-`teardown()` reverses it. If `DISCORD_BOT_TOKEN` isn't set, the bot is
-skipped entirely and a warning is logged — the same graceful-degradation
-pattern used when no `ANTHROPIC_API_KEY` is set for the Reasoning Engine.
-`create_app()` wires both into a FastAPI ASGI [`lifespan`](https://fastapi.tiangolo.com/advanced/events/),
+database → Evidence Aggregator → Strategy Engine → Reasoning Engine →
+plugin registry → Discord bot) and `teardown()` reverses it. If
+`DISCORD_BOT_TOKEN` isn't set, the bot is skipped entirely and a warning is
+logged — the same graceful-degradation pattern used when no
+`ANTHROPIC_API_KEY` is set for the Reasoning Engine. `create_app()` wires
+both into a FastAPI ASGI [`lifespan`](https://fastapi.tiangolo.com/advanced/events/),
 which is also how **graceful shutdown** works: uvicorn intercepts
 SIGINT/SIGTERM, runs the lifespan shutdown phase (closing the Discord bot
 first, then plugins, then the event bus, then the database), and only then
@@ -219,6 +315,8 @@ before the container exits.
 - `GET /health` — overall status, DB reachability, Discord connection
   state (`not_configured` / `connecting` / `connected`), per-plugin health
 - `GET /plugins` — loaded plugin metadata + any that failed to load
+- `GET /strategies` — loaded strategy definitions (required/optional
+  evidence, minimum score, repeat policy)
 
 ## Configuration (`app/config/`)
 

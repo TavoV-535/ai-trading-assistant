@@ -1,3 +1,10 @@
 # Default config for the Donchian Channel indicator plugin.
 period: 20
 window: 300
+# every_breakout (default, mathematically complete) | first_breakout |
+# after_pullback — controls how often THIS PLUGIN publishes evidence for a
+# breakout streak. Regardless of this setting, every occurrence is still
+# tracked and tagged with sequence metadata, so a strategy can reinterpret
+# repeats differently via its own repeat_policy even when this is left at
+# every_breakout. See docs/PLUGIN_GUIDE.md.
+repeat_policy: every_breakout

@@ -83,6 +83,16 @@ class DiscordSection(BaseModel):
     command_prefix: str = "/"
 
 
+class AggregationSection(BaseModel):
+    #: How long a piece of evidence is considered "fresh" before it decays
+    #: out of the Strategy Engine's / Reasoning Engine's active view. See
+    #: app/aggregation/aggregator.py.
+    freshness_window_seconds: float = 900.0
+    #: Bounded per-symbol history retained by the Evidence Aggregator
+    #: (preserves the full historical sequence, not just the fresh subset).
+    max_history_per_symbol: int = 500
+
+
 class Settings(BaseSettings):
     """Root settings object. Instantiate via :func:`get_settings`."""
 
@@ -117,6 +127,7 @@ class Settings(BaseSettings):
     scanner: ScannerSection = Field(default_factory=ScannerSection)
     api: ApiSection = Field(default_factory=ApiSection)
     discord: DiscordSection = Field(default_factory=DiscordSection)
+    aggregation: AggregationSection = Field(default_factory=AggregationSection)
 
     @classmethod
     def settings_customise_sources(

@@ -3,10 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 
+from app.aggregation.aggregator import EvidenceAggregator
 from app.evidence import Evidence, EvidenceCategory
 from app.event_bus import EvidenceProduced
 from app.reasoning import ReasoningEngine
 from app.reasoning.providers.base import ReasoningProvider
+
+
+def _attach_aggregator(settings, event_bus) -> EvidenceAggregator:
+    """The Reasoning Engine now consumes EvidenceAggregated exclusively
+    (never raw EvidenceProduced directly) — every test that publishes
+    evidence needs a live aggregator on the same bus to bridge the two,
+    exactly like a real deployment's bootstrap wires them."""
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    return aggregator
 
 
 class FakeProvider(ReasoningProvider):
@@ -32,6 +43,7 @@ async def test_insufficient_evidence_returns_zero_confidence(settings):
 
 
 async def test_evidence_only_fallback_without_provider(settings, event_bus):
+    _attach_aggregator(settings, event_bus)
     engine = ReasoningEngine(settings, provider=None)
     engine.attach(event_bus)
 
@@ -69,6 +81,7 @@ async def test_ai_path_uses_provider_and_includes_mission_statement_in_system_pr
             "historical_similarity": "similar to March",
         }
     )
+    _attach_aggregator(settings, event_bus)
     engine = ReasoningEngine(settings, provider=provider)
     engine.attach(event_bus)
 
@@ -89,6 +102,7 @@ async def test_ai_path_uses_provider_and_includes_mission_statement_in_system_pr
 
 
 async def test_ai_failure_falls_back_to_evidence_only(settings, event_bus):
+    _attach_aggregator(settings, event_bus)
     provider = FakeProvider(error=RuntimeError("simulated network failure"))
     engine = ReasoningEngine(settings, provider=provider)
     engine.attach(event_bus)
@@ -107,6 +121,7 @@ async def test_ai_failure_falls_back_to_evidence_only(settings, event_bus):
 
 async def test_reasoning_disabled_in_config_uses_evidence_only(settings, event_bus):
     settings.reasoning.enabled = False
+    _attach_aggregator(settings, event_bus)
     provider = FakeProvider(response={
         "market_summary": "x", "trade_thesis": "x", "risk_assessment": "x",
         "alternative_scenario": "x", "confidence": 50,

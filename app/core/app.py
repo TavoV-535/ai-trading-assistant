@@ -75,4 +75,20 @@ def create_app(settings: Any | None = None) -> FastAPI:
             "failed": state.plugin_registry.failed,
         }
 
+    @app.get("/strategies")
+    async def strategies() -> dict:
+        state: AppState = app.state.core
+        return {
+            "loaded": [
+                {
+                    "name": s.name,
+                    "required": sorted(s.required),
+                    "optional": sorted(s.optional),
+                    "minimum_score": s.minimum_score,
+                    "repeat_policy": s.repeat_policy,
+                }
+                for s in state.strategy_engine.strategies
+            ]
+        }
+
     return app
