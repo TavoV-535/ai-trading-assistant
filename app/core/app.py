@@ -48,10 +48,18 @@ def create_app(settings: Any | None = None) -> FastAPI:
         plugin_health = await state.plugin_registry.health_check_all()
         unhealthy = [name for name, h in plugin_health.items() if h.status == "unhealthy"]
 
+        if state.discord_bot is None:
+            discord_status = "not_configured"
+        elif state.discord_bot.is_ready():
+            discord_status = "connected"
+        else:
+            discord_status = "connecting"
+
         overall_ok = db_ok and not unhealthy
         body = {
             "status": "healthy" if overall_ok else "degraded",
             "database": "healthy" if db_ok else "unhealthy",
+            "discord": discord_status,
             "plugins": {name: h.status for name, h in plugin_health.items()},
             "plugins_failed_to_load": list(state.plugin_registry.failed.keys()),
         }

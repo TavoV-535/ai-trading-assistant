@@ -10,14 +10,15 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestone 1 — Core Architecture: complete.**
+**Milestone 1 (Core Architecture) and Milestone 2 (Discord Bot Skeleton): complete.**
 
-This milestone built the foundation everything else plugs into: the event
-bus, the plugin contract, the evidence object, the reasoning engine, the
-database layer, and local deployment. No Discord wiring, indicators beyond
-one reference plugin, or trading domain models yet — those are later
-milestones, built on top of this without changing any of it. See
-[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's next.
+The event bus, plugin contract, evidence object, reasoning engine,
+database layer, and local deployment are built (Milestone 1), and the
+Discord bot now connects, exposes `/help` and a reference `/ping` command,
+and routes every command through the same event-driven, plugin-first
+architecture (Milestone 2) — a new slash command is a plugin, exactly like
+an indicator. See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's
+done and what's next.
 
 ## Quick start (Docker — recommended)
 
@@ -25,18 +26,23 @@ milestones, built on top of this without changing any of it. See
 cp .env.example .env
 # fill in ANTHROPIC_API_KEY if you want AI-generated summaries;
 # without it the Reasoning Engine still runs in evidence-only mode.
+# fill in DISCORD_BOT_TOKEN + DISCORD_GUILD_ID to bring the bot online —
+# see docs/DISCORD_BOT_SETUP.md if you haven't created the bot yet.
+# without a token the app still runs fine, just without Discord.
 
 ./scripts/start.sh
 # equivalent to: docker compose -f docker/docker-compose.yml up --build
 ```
 
-This starts Postgres, runs Alembic migrations automatically, and starts the
-app. Check it's alive:
+This starts Postgres, runs Alembic migrations automatically, starts the
+app, and (if a token is set) connects the Discord bot. Check it's alive:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8000/health   # includes "discord": "connected" | "connecting" | "not_configured"
 curl http://localhost:8000/plugins
 ```
+
+In Discord, try `/ping` and `/help`.
 
 Stop everything with `./scripts/stop.sh`.
 
@@ -67,7 +73,10 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-35 tests, ~92% coverage of `app/` as of Milestone 1.
+46 tests, ~92% coverage of `app/` as of Milestone 2. Live Discord gateway
+connection can't be exercised in CI/sandboxes — see
+[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
+what needs verifying against a real Discord connection on your machine.
 
 ## Project structure
 
@@ -78,20 +87,23 @@ app/
   event_bus/    # the async pub/sub bus + every core Event schema
   evidence/     # the Universal Evidence Object
   plugins/      # PluginBase contract + auto-discovery + registry
+  discord/      # TradingBot + DiscordCommandPlugin contract + command dispatch
   reasoning/    # Reasoning Engine + Claude provider
   db/           # SQLAlchemy models, Repository pattern, event persistence
   core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins)
 plugins/        # actual plugins live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/ema/
+  commands/ping/
 alembic/        # migrations (async, driven by app.config settings)
 docker/         # Dockerfile, docker-compose.yml, entrypoint.sh
-docs/           # architecture, plugin guide, milestone tracker
+docs/           # architecture, plugin guide, milestone tracker, Discord setup
 tests/          # pytest suite mirroring the app/ layout
 ```
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the event bus, plugin contract, evidence object, and reasoning engine fit together
-- [`docs/PLUGIN_GUIDE.md`](./docs/PLUGIN_GUIDE.md) — how to add a new plugin without touching core code
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the event bus, plugin contract, evidence object, reasoning engine, and Discord bot fit together
+- [`docs/PLUGIN_GUIDE.md`](./docs/PLUGIN_GUIDE.md) — how to add a new plugin (indicator or Discord command) without touching core code
+- [`docs/DISCORD_BOT_SETUP.md`](./docs/DISCORD_BOT_SETUP.md) — creating the bot application and getting a token
 - [`docs/MILESTONES.md`](./docs/MILESTONES.md) — what's built, what's next, in the order `PROJECT.md` implies
 - [`PROJECT.md`](./PROJECT.md) — the full product spec

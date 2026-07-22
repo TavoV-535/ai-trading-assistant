@@ -2,6 +2,8 @@ from app.event_bus.bus import EventBus, Subscription
 from app.event_bus.events import (
     EVENT_TYPES,
     BacktestFinished,
+    CommandFailed,
+    CommandInvoked,
     DailySummary,
     EarningsReleased,
     Event,
@@ -39,4 +41,6 @@ __all__ = [
     "DailySummary",
     "RiskWarning",
     "EvidenceProduced",
+    "CommandInvoked",
+    "CommandFailed",
 ]

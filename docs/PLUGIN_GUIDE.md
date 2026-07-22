@@ -135,3 +135,98 @@ async def test_rsi_publishes_evidence_on_overbought(event_bus, settings):
 
 See `tests/test_ema_plugin.py` for a complete worked example against the
 reference `EMA` plugin.
+
+---
+
+# Writing a Discord command plugin
+
+A `/slash-command` is a plugin too — the same auto-discovery, the same
+isolation, the same "drop a folder in" rule. The only difference is which
+base class you extend and which folder you use.
+
+## 1. Create the folder under `plugins/commands/`
+
+```
+plugins/commands/echo/
+    plugin.py
+```
+
+## 2. Extend `DiscordCommandPlugin` instead of `PluginBase`
+
+It's the same five-method contract, plus one more: `execute()`.
+
+```python
+# plugins/commands/echo/plugin.py
+from typing import Any
+
+from app.discord.command_plugin import DiscordCommandPlugin
+from app.discord.dispatch import CommandContext, CommandResponse
+from app.plugins.base import PluginHealth, PluginPermission
+
+
+class EchoPlugin(DiscordCommandPlugin):
+    """Replies with whatever the user asked."""
+
+    name = "Echo"
+    version = "0.1.0"
+    category = "commands"
+    command_name = "echo"                 # this becomes /echo
+    command_description = "Repeats back a message."
+
+    async def initialize(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+    async def health(self) -> PluginHealth:
+        return PluginHealth(status="healthy")
+
+    def config(self) -> dict[str, Any]:
+        return {}
+
+    def permissions(self) -> list[str]:
+        return [PluginPermission.EVENTS_PUBLISH]
+
+    async def execute(self, ctx: CommandContext) -> CommandResponse:
+        return CommandResponse(content=f"You are user {ctx.user_id}")
+```
+
+That's the whole integration. The bot finds it via the same
+`PluginRegistry` used for every other plugin category, registers it as a
+slash command in `setup_hook()`, and every invocation is automatically
+logged as a `CommandInvoked` event.
+
+## 3. What's different from an indicator/scanner plugin
+
+- `command_name` must be lowercase, 1-32 characters, letters/numbers/
+  underscore/hyphen only (`app.discord.is_valid_command_name` — an invalid
+  name is logged and skipped, not fatal).
+- `execute()` receives a `CommandContext` (`user_id`, `guild_id`,
+  `channel_id`, `args`) — never the raw discord.py `Interaction`. This is
+  what keeps command plugins testable without a live Discord connection.
+- `execute()` returns a `CommandResponse(content=..., ephemeral=...)`. In
+  Milestone 2, commands take no parameters — parameterized commands (like
+  `/analyze NVDA`) are a Milestone 3 extension to `DiscordCommandPlugin`.
+- If `execute()` raises, `dispatch_command` catches it, publishes
+  `CommandFailed`, and returns a generic apology to the user — your plugin
+  never needs its own top-level try/except for this.
+
+## 4. Test it without Discord
+
+```python
+async def test_echo_command(event_bus, settings):
+    registry = PluginRegistry(event_bus, settings)
+    await registry.load_all(PROJECT_ROOT)
+    echo = registry.get("Echo")
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={})
+    response = await dispatch_command(echo, event_bus, ctx)
+
+    assert response.content == "You are user 1"
+```
+
+See `tests/test_ping_plugin.py` and `tests/test_discord_dispatch.py` for
+complete worked examples, including how `tests/test_discord_bot.py` verifies
+the bridge to a real `discord.Interaction` with a lightweight fake object —
+without ever needing a network connection to Discord.

@@ -14,8 +14,11 @@ async def test_bootstrap_loads_plugins_and_teardown_is_clean(settings):
     state = await bootstrap(settings, project_root=PROJECT_ROOT)
 
     assert "EMA" in state.plugin_registry.plugins
+    assert "Ping" in state.plugin_registry.plugins
     assert state.plugin_registry.failed == {}
     assert await state.database.health() is True
+    assert state.discord_bot is None  # no DISCORD_BOT_TOKEN in test settings
+    assert state.discord_task is None
 
     await teardown(state)
 
@@ -28,11 +31,13 @@ def test_health_endpoint_reports_healthy(settings):
         body = response.json()
         assert body["status"] == "healthy"
         assert body["database"] == "healthy"
+        assert body["discord"] == "not_configured"  # no DISCORD_BOT_TOKEN in test settings
         assert body["plugins"]["EMA"] == "degraded"  # no market data fed yet in this test
+        assert body["plugins"]["Ping"] == "healthy"
         assert body["plugins_failed_to_load"] == []
 
 
-def test_plugins_endpoint_lists_ema(settings):
+def test_plugins_endpoint_lists_ema_and_ping(settings):
     app = create_app(settings)
     with TestClient(app) as client:
         response = client.get("/plugins")
@@ -40,4 +45,6 @@ def test_plugins_endpoint_lists_ema(settings):
         body = response.json()
         assert "EMA" in body["loaded"]
         assert body["loaded"]["EMA"]["category"] == "indicators"
+        assert "Ping" in body["loaded"]
+        assert body["loaded"]["Ping"]["category"] == "commands"
         assert body["failed"] == {}

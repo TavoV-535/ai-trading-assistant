@@ -22,29 +22,59 @@ Explicitly **not** in this milestone: Discord connection, the rest of the
 indicator library, strategies, scanners, news/earnings/macro engines,
 watchlists, backtesting, journaling, risk engine, coaching. Those are next.
 
+## Milestone 2 — Discord Bot Skeleton ✅ complete
+
+- `CommandInvoked` / `CommandFailed` events — commands are logged exactly
+  like every other event (app/event_bus)
+- `dispatch_command()` — framework-agnostic command execution: publishes
+  the audit event, runs the plugin, isolates exceptions, never crashes the
+  bot on a broken command (app/discord/dispatch.py)
+- `DiscordCommandPlugin` — a new plugin base class (`commands` category)
+  adding one method, `execute()`, on top of the Universal Plugin Contract;
+  discovered by the exact same `PluginRegistry` as every other plugin
+- `TradingBot` — thin discord.py adapter: built-in `/help`, auto-registers
+  every discovered command plugin as a slash command, guild-scoped sync for
+  instant dev iteration (app/discord/bot.py)
+- Reference plugin: `/ping` — proves the full pipeline end to end, the same
+  way EMA proved the indicator pipeline in Milestone 1
+  (plugins/commands/ping)
+- Bot lifecycle wired into `bootstrap()`/`teardown()` — graceful
+  degradation if `DISCORD_BOT_TOKEN` isn't set (same pattern as the
+  Reasoning Engine without an API key), graceful shutdown on SIGTERM,
+  `/health` reports Discord connection state
+- 46 tests passing, ~92% coverage of `app/`, ruff clean
+
+**What wasn't (and couldn't be) verified here:** this sandbox has no
+network path to Discord's gateway, so the actual `bot.start(token)` /
+`on_ready` / live slash-command sync has to be verified on your machine.
+Everything up to that boundary — command registration onto the real
+discord.py `CommandTree`, the Interaction → `dispatch_command` bridge (with
+a fake `Interaction`), event publishing, error isolation — is unit tested.
+**Next step for you:** follow `docs/DISCORD_BOT_SETUP.md` if you haven't
+already, put the token + guild ID in `.env`, run `docker compose up`, and
+try `/ping` and `/help` in your VerserTrades server.
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **Discord bot skeleton** — bot connects, `/help`, command routing through
-   the existing Event Bus (a Discord command becomes an event; a response
-   is a subscriber reacting to it). Needs a bot token — see the walkthrough
-   you asked for separately.
-2. **Indicator library** — SMA, VWAP, RSI, MACD, ATR, ADX, Bollinger,
+1. **Indicator library** — SMA, VWAP, RSI, MACD, ATR, ADX, Bollinger,
    Supertrend, OBV, CCI, Ichimoku, Donchian, Volume Profile, each as its own
    plugin following the EMA pattern (`docs/PLUGIN_GUIDE.md`).
-3. **Strategy Engine** — YAML/JSON strategy recipes that reference evidence
+2. **Strategy Engine** — YAML/JSON strategy recipes that reference evidence
    by category/source, a minimum-score gate, `StrategyMatched` events.
-4. **`/analyze SYMBOL`** — the first real Discord command: pulls evidence +
-   reasoning output for a symbol, renders as an interactive message with
-   buttons (Chart / News / History / Backtest / Journal / Watch / Dismiss).
-5. **Scanner Engine** — continuous per-minute evidence generation across a
+3. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
+   small extension to `DiscordCommandPlugin` for declaring slash-command
+   options): pulls evidence + reasoning output for a symbol, renders as an
+   interactive message with buttons (Chart / News / History / Backtest /
+   Journal / Watch / Dismiss).
+4. **Scanner Engine** — continuous per-minute evidence generation across a
    watchlist, multiple timeframes and asset classes.
-6. **News / Earnings / Macro engines** — each a plugin category, each only
+5. **News / Earnings / Macro engines** — each a plugin category, each only
    ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
    directive.
-7. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
+6. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach

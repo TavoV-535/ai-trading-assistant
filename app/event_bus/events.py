@@ -157,6 +157,27 @@ class RiskWarning(Event):
     severity: Literal["info", "warning", "critical"] = "warning"
 
 
+# ---------------------------------------------------------------- commands (Discord)
+
+
+class CommandInvoked(Event):
+    """Published every time a Discord command runs — this is what makes
+    'everything logged' true for commands, independent of whichever plugin
+    handled it."""
+
+    command: str
+    user_id: str
+    guild_id: str | None = None
+    channel_id: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandFailed(Event):
+    command: str
+    user_id: str
+    error: str
+
+
 # ---------------------------------------------------------------- reasoning input
 
 
@@ -187,5 +208,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         DailySummary,
         RiskWarning,
         EvidenceProduced,
+        CommandInvoked,
+        CommandFailed,
     )
 }

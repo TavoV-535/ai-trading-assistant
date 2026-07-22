@@ -127,17 +127,62 @@ This is what makes "everything logged" true at the storage layer — future
 milestones add domain tables (trades, journals, watchlists, strategies) the
 same way, without touching this layer.
 
+## Discord (`app/discord/`)
+
+The bot is the "Command Engine" in the architecture diagram, and it's kept
+deliberately thin. A Discord slash command is itself a plugin — drop a
+folder under `plugins/commands/` implementing `DiscordCommandPlugin`
+(adds one method, `execute()`, on top of the Universal Plugin Contract) and
+it's auto-discovered and registered the same way an indicator or scanner
+plugin is. No command is hardcoded into the bot except the built-in
+`/help`, which has to know about every other command to list them.
+
+The logic worth testing is split from the part that genuinely needs a live
+Discord connection:
+
+- **`dispatch.py`** — framework-agnostic. `dispatch_command(plugin,
+  event_bus, ctx)` publishes a `CommandInvoked` audit event (this is what
+  makes "everything logged" true for commands), runs the plugin's
+  `execute()`, and if it raises, publishes `CommandFailed`, logs the
+  exception, and returns a graceful error response — a broken command
+  never crashes the bot process, same isolation policy as plugin loading.
+  `CommandContext` and `CommandResponse` are plain dataclasses, not
+  discord.py objects, so this is fully unit-testable without a gateway
+  connection.
+- **`bot.py`** — the thin adapter. `TradingBot` wraps `discord.Client` +
+  `app_commands.CommandTree`. Its `setup_hook()` (called by discord.py once,
+  before it opens the gateway) calls `register_command_plugins()`, which
+  finds every loaded `DiscordCommandPlugin` and wires a small callback that
+  extracts fields off the real `discord.Interaction` and calls
+  `dispatch_command`. Command name collisions and invalid names are logged
+  and skipped, not fatal. Slash commands sync instantly to
+  `DISCORD_GUILD_ID` if set (fast, for development); otherwise they sync
+  globally (can take up to an hour to propagate — normal Discord behavior).
+
+**What can and can't be verified without a live Discord connection:** the
+whole pipeline up to and including "does this Interaction produce the right
+`send_message` call" is unit tested with a duck-typed fake `Interaction`
+(see `tests/test_discord_bot.py`). Actually opening the gateway connection
+(`bot.start(token)`) can only be exercised against Discord's real servers —
+that happens when you run `docker compose up` on your own machine with a
+real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
+
 ## Core / lifecycle (`app/core/`)
 
 `bootstrap()` brings systems up in dependency order (logging → event bus →
-database → reasoning engine → plugin registry) and `teardown()` reverses
-it. `create_app()` wires both into a FastAPI ASGI [`lifespan`](https://fastapi.tiangolo.com/advanced/events/),
+database → reasoning engine → plugin registry → Discord bot) and
+`teardown()` reverses it. If `DISCORD_BOT_TOKEN` isn't set, the bot is
+skipped entirely and a warning is logged — the same graceful-degradation
+pattern used when no `ANTHROPIC_API_KEY` is set for the Reasoning Engine.
+`create_app()` wires both into a FastAPI ASGI [`lifespan`](https://fastapi.tiangolo.com/advanced/events/),
 which is also how **graceful shutdown** works: uvicorn intercepts
-SIGINT/SIGTERM, runs the lifespan shutdown phase, and only then exits — so
-`docker compose stop` always tears plugins, the event bus, and the database
-down cleanly before the container exits.
+SIGINT/SIGTERM, runs the lifespan shutdown phase (closing the Discord bot
+first, then plugins, then the event bus, then the database), and only then
+exits — so `docker compose stop` always tears everything down cleanly
+before the container exits.
 
-- `GET /health` — overall status, DB reachability, per-plugin health
+- `GET /health` — overall status, DB reachability, Discord connection
+  state (`not_configured` / `connecting` / `connected`), per-plugin health
 - `GET /plugins` — loaded plugin metadata + any that failed to load
 
 ## Configuration (`app/config/`)

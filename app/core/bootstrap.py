@@ -7,6 +7,8 @@ server running.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from app.config import get_settings
 from app.core.state import AppState
 from app.db.base import Database
 from app.db.event_logger import attach_event_logger
+from app.discord.bot import TradingBot
 from app.event_bus.bus import EventBus
 from app.logging import configure_logging, get_logger
 from app.plugins.registry import PluginRegistry
@@ -64,10 +67,25 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     plugin_registry = PluginRegistry(event_bus, settings)
     await plugin_registry.load_all(root)
 
+    discord_bot: TradingBot | None = None
+    discord_task: "asyncio.Task[None] | None" = None
+    if settings.has_discord_token:
+        discord_bot = TradingBot(settings, event_bus, plugin_registry)
+        token = settings.discord_bot_token.get_secret_value()
+        discord_task = asyncio.create_task(discord_bot.start(token))
+        log.info("discord_bot_starting")
+    else:
+        log.warning(
+            "discord_bot_not_configured",
+            detail="DISCORD_BOT_TOKEN missing — Discord commands will not be reachable "
+            "until it's set. See docs/DISCORD_BOT_SETUP.md.",
+        )
+
     log.info(
         "bootstrap_complete",
         plugins_loaded=len(plugin_registry.plugins),
         plugins_failed=len(plugin_registry.failed),
+        discord_enabled=discord_bot is not None,
     )
 
     return AppState(
@@ -77,12 +95,20 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         plugin_registry=plugin_registry,
         reasoning_engine=reasoning_engine,
         project_root=root,
+        discord_bot=discord_bot,
+        discord_task=discord_task,
     )
 
 
 async def teardown(state: AppState) -> None:
     """Shut everything down in reverse dependency order."""
     log.info("teardown_starting")
+    if state.discord_bot is not None:
+        await state.discord_bot.close()
+    if state.discord_task is not None:
+        state.discord_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.discord_task
     await state.plugin_registry.shutdown_all()
     await state.event_bus.shutdown()
     await state.database.dispose()
