@@ -157,26 +157,79 @@ a silent assumption.
   strategy → real Reasoning Engine synthesis, all in one run (see the
   Milestone 4 completion report for the transcript).
 
+## Milestone 5 — `/analyze SYMBOL` ✅ complete
+
+- **`DiscordCommandPlugin.parameters`** (`app/discord/command_plugin.py`) —
+  a command plugin declares its slash-command options as data:
+  `CommandOption(name, description, required)`, string-typed for now.
+  `TradingBot._build_parameterized_callback()` dynamically builds a real
+  function whose Python signature matches the declared options (discord.py
+  derives a command's options by inspecting the callback's signature —
+  there's no supported way to attach them otherwise), so a command with a
+  real argument is still "drop a folder in," no other integration step.
+  Option names are validated the same way command names are
+  (`is_valid_option_name`); an invalid one is logged and skipped, not
+  fatal. A zero-parameter command (`/ping`, `/help`) is unaffected.
+- **`CommandResponse.buttons`** (`app/discord/dispatch.py`) —
+  `CommandButton(label, custom_id, style, disabled)`, a plain dataclass so
+  a command plugin declaring buttons stays testable without discord.py.
+  `TradingBot` turns these into a real `discord.ui.View` when sending the
+  response. `custom_id` convention: `"{command}:{action}:{extra}"` — the
+  adapter's click handler treats the action `"dismiss"` specially (deletes
+  the message) and gives every other action a generic, honest "not built
+  yet" reply, since the systems some buttons imply don't exist yet. This
+  is generic, not `/analyze`-specific — any future command reusing
+  `dismiss` gets the same working behavior for free.
+- **`PluginContext` read-only query exception** (`app/plugins/base.py`,
+  `app/plugins/registry.py`, `app/core/bootstrap.py`) — three new optional
+  fields, `reasoning_engine` / `evidence_aggregator` / `strategy_engine`,
+  default `None`, threaded through `PluginRegistry` from `bootstrap()`. A
+  deliberate, narrow, documented exception to "plugins only talk through
+  the Event Bus": a command plugin needing the *current* state on demand
+  (not the next event) may read from these, never mutate them, never
+  reach into a specific indicator plugin.
+- **Reference plugin: `/analyze SYMBOL`**
+  (`plugins/commands/analyze/`) — the same role `EMA` plays for
+  indicators, `Ping` plays for commands, and `Momentum Breakout` plays for
+  strategies. Pulls the Evidence Aggregator's current snapshot and the
+  Reasoning Engine's current output for a symbol, formats them into one
+  message, and attaches all seven buttons (Chart / News / History /
+  Backtest / Journal / Watch / Dismiss) — only Dismiss has real behavior
+  today, honestly, since the other six name systems (charting, news,
+  history, backtesting, journaling, watchlists) that aren't built yet.
+- 15 new tests (CommandOption/CommandButton defaults and validation,
+  parameterized registration deriving a real discord.py option, callback
+  arg-passing, invalid-option isolation, button-view construction, dismiss
+  behavior, placeholder-button behavior, and 5 `/analyze`-specific tests
+  against real `EvidenceAggregator`/`StrategyEngine`/`ReasoningEngine`
+  instances) plus one existing test updated for the new registered
+  command; 159 tests passing total, ~94% coverage of `app/`, ruff clean.
+- **Known limitation, not a bug:** there's no live market data feed yet
+  (that's the Scanner Engine, next up) — `/analyze` for any real-world
+  symbol will honestly report `insufficient_evidence` until something has
+  actually published `MarketDataUpdated` for it. Same graceful-degradation
+  pattern the Reasoning Engine already uses everywhere else.
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
-   small extension to `DiscordCommandPlugin` for declaring slash-command
-   options): pulls evidence + reasoning output for a symbol, renders as an
-   interactive message with buttons (Chart / News / History / Backtest /
-   Journal / Watch / Dismiss).
-2. **Scanner Engine** — continuous per-minute evidence generation across a
-   watchlist, multiple timeframes and asset classes.
-3. **News / Earnings / Macro engines** — each a plugin category, each only
+1. **Scanner Engine** — continuous per-minute evidence generation across a
+   watchlist, multiple timeframes and asset classes. This is also what
+   unblocks `/analyze` from reporting `insufficient_evidence` for
+   real-world symbols nobody has manually fed data for yet.
+2. **News / Earnings / Macro engines** — each a plugin category, each only
    ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
    directive.
-4. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
+3. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach
    needs journaling; risk warnings need trade events already flowing).
+   These are also what would give `/analyze`'s Chart / News / History /
+   Backtest / Journal / Watch buttons real behavior instead of a
+   placeholder reply.
 
 Say the word and the next milestone starts. Nothing here commits to a
 specific order — just say which one you want first.

@@ -73,6 +73,17 @@ A plugin is handed a `PluginContext` at construction: the shared
 from an optional `config.yaml` next to `plugin.py`). That's the entire
 surface a plugin needs — it never reaches into core modules directly.
 
+`PluginContext` also carries `reasoning_engine`, `evidence_aggregator`, and
+`strategy_engine` — all default to `None`, and all exist for exactly one
+narrow, documented reason: a Discord command plugin sometimes needs to
+answer an on-demand, synchronous, read-only query (`/analyze NVDA` needs
+whatever the *current* evidence/reasoning state is right now, not whatever
+the next event happens to publish). A plugin may read from these; it may
+never use them to mutate state, publish on another system's behalf, or
+reach into a specific indicator plugin's internals — the Event Bus remains
+the only way to make something happen. See `PluginContext`'s docstring in
+`app/plugins/base.py` and the "Discord" section below.
+
 **Discovery** (`app/plugins/loader.py`) walks every directory listed in
 `config.plugins.search_paths`, imports each `<plugin-folder>/plugin.py`,
 and picks up the one `PluginBase` subclass it defines. A folder that fails
@@ -288,6 +299,43 @@ Discord connection:
   and skipped, not fatal. Slash commands sync instantly to
   `DISCORD_GUILD_ID` if set (fast, for development); otherwise they sync
   globally (can take up to an hour to propagate — normal Discord behavior).
+
+**Parameterized commands.** A command plugin declares its slash-command
+parameters as data — `DiscordCommandPlugin.parameters`, a tuple of
+`CommandOption(name, description, required)` — never as a hand-written
+discord.py callback. discord.py derives a command's options by inspecting
+the callback function's Python signature, so there's no supported way to
+attach options to a command without a matching signature; since the
+options are plugin-declared data, `bot.py`'s
+`_build_parameterized_callback()` builds that function at registration
+time (`exec`, deliberately, with a docstring explaining why). Every
+declared option is currently string-typed — see `CommandOption`'s
+docstring before adding int/float/bool/choice support. A command with no
+parameters (`/ping`, `/help`) skips this entirely, same as before.
+
+**Interactive buttons.** `CommandResponse` can carry `buttons: list[
+CommandButton]` — plain dataclasses (`label`, `custom_id`, `style`), never
+real discord.py components, so a command plugin declaring buttons stays
+testable without discord.py. `bot.py` turns these into a real
+`discord.ui.View` when sending the response. `custom_id` follows the
+convention `"{command}:{action}:{extra}"`; the adapter's button-click
+handler treats the action `"dismiss"` specially (deletes the message) and
+gives every other action an honest "not built yet" reply — generic, not
+specific to any one command, so a future command can reuse `dismiss` for
+free and get the same behavior.
+
+**Reference plugin:** `plugins/commands/analyze/` (`/analyze SYMBOL`) is
+the first command exercising both of the above — one required `symbol`
+option, and seven buttons (Chart / News / History / Backtest / Journal /
+Watch / Dismiss), of which only Dismiss has real behavior today since the
+other six name systems (charting, news, history, backtesting, journaling,
+watchlists) that don't exist yet. It reads `context.evidence_aggregator`
+and `context.reasoning_engine` directly (the documented `PluginContext`
+exception above) to answer the query synchronously, and gracefully reports
+"insufficient evidence" for any symbol nothing has published
+`MarketDataUpdated` for yet — there's no live market data feed until the
+Scanner Engine milestone, so that's an expected, honest limitation, not a
+bug.
 
 **What can and can't be verified without a live Discord connection:** the
 whole pipeline up to and including "does this Interaction produce the right

@@ -230,12 +230,94 @@ logged as a `CommandInvoked` event.
 - `execute()` receives a `CommandContext` (`user_id`, `guild_id`,
   `channel_id`, `args`) — never the raw discord.py `Interaction`. This is
   what keeps command plugins testable without a live Discord connection.
-- `execute()` returns a `CommandResponse(content=..., ephemeral=...)`. In
-  Milestone 2, commands take no parameters — parameterized commands (like
-  `/analyze NVDA`) are a Milestone 3 extension to `DiscordCommandPlugin`.
+- `execute()` returns a `CommandResponse(content=..., ephemeral=...,
+  buttons=...)`.
 - If `execute()` raises, `dispatch_command` catches it, publishes
   `CommandFailed`, and returns a generic apology to the user — your plugin
   never needs its own top-level try/except for this.
+
+## 3.5. Declaring parameters (`/analyze SYMBOL`, not just `/ping`)
+
+A command with no parameters (like `Echo` above) is the whole story. A
+command with a real argument declares it as data:
+
+```python
+from app.discord.command_plugin import CommandOption
+
+class AnalyzePlugin(DiscordCommandPlugin):
+    command_name = "analyze"
+    parameters = (
+        CommandOption(name="symbol", description="Ticker symbol, e.g. NVDA", required=True),
+    )
+
+    async def execute(self, ctx: CommandContext) -> CommandResponse:
+        symbol = ctx.args["symbol"]
+        ...
+```
+
+`ctx.args` is keyed by each option's `name`. `TradingBot` derives the real
+discord.py slash-command option from this tuple at registration time — no
+other integration step, same "drop it in" rule as everything else. Option
+names follow the same naming rule as command names
+(`app.discord.is_valid_option_name`); an invalid one is logged and the
+whole command is skipped, not fatal. Every option is currently
+string-typed — see `CommandOption`'s docstring in
+`app/discord/command_plugin.py` before a command needs int/float/bool/
+choice options.
+
+## 3.6. Interactive buttons
+
+`CommandResponse.buttons` takes a list of `CommandButton(label, custom_id,
+style, disabled)`:
+
+```python
+from app.discord.dispatch import CommandButton
+
+return CommandResponse(
+    content="...",
+    buttons=[
+        CommandButton(label="Watch", custom_id=f"analyze:watch:{symbol}"),
+        CommandButton(label="Dismiss", custom_id=f"analyze:dismiss:{symbol}", style="danger"),
+    ],
+)
+```
+
+`custom_id` convention: `"{command}:{action}:{extra}"`. The Discord
+adapter treats the action `"dismiss"` specially (deletes the message);
+every other action gets a generic "not built yet" reply unless you've
+built real handling for it — this is deliberately generic, not something
+you register per command, so reusing `dismiss` in a new command gets the
+same working behavior for free. See `plugins/commands/analyze/plugin.py`
+for the reference usage (seven buttons, one of which — Dismiss — has real
+behavior today, since the other six name systems that don't exist yet).
+
+## 3.7. Reading current evidence/reasoning state (read-only, on demand)
+
+Most plugins only ever react to events. A command like `/analyze` needs
+something different: the *current* state, synchronously, right now — not
+whatever the next event happens to publish. For exactly this case,
+`PluginContext` carries three additional, optional references:
+`context.evidence_aggregator`, `context.reasoning_engine`,
+`context.strategy_engine` (all default to `None` — handle that gracefully,
+most unit tests won't supply them).
+
+```python
+async def execute(self, ctx: CommandContext) -> CommandResponse:
+    aggregator = self.context.evidence_aggregator
+    reasoning_engine = self.context.reasoning_engine
+    if aggregator is None or reasoning_engine is None:
+        return CommandResponse(content="Analysis isn't available right now.", ephemeral=True)
+
+    snapshot = aggregator.snapshot(symbol)       # AggregateSnapshot
+    output = await reasoning_engine.analyze(symbol)  # ReasoningOutput
+    ...
+```
+
+This is a deliberate, narrow exception to "plugins only talk through the
+Event Bus" (see `PluginContext`'s docstring in `app/plugins/base.py`) —
+read-only queries only. Never use these to mutate state, publish on
+another system's behalf, or reach into a specific indicator plugin's
+internals.
 
 ## 4. Test it without Discord
 
@@ -254,7 +336,12 @@ async def test_echo_command(event_bus, settings):
 See `tests/test_ping_plugin.py` and `tests/test_discord_dispatch.py` for
 complete worked examples, including how `tests/test_discord_bot.py` verifies
 the bridge to a real `discord.Interaction` with a lightweight fake object —
-without ever needing a network connection to Discord.
+without ever needing a network connection to Discord. See
+`tests/test_analyze_plugin.py` for a parameterized command exercising the
+`evidence_aggregator`/`reasoning_engine` query pattern against real (not
+mocked) components, and `tests/test_discord_bot.py`'s parameterized-option
+and button tests for how a declared `CommandOption`/`CommandButton` becomes
+a real discord.py option/component.
 
 ---
 

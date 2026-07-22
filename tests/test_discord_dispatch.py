@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from app.discord.command_plugin import DiscordCommandPlugin, is_valid_command_name
-from app.discord.dispatch import CommandContext, CommandResponse, dispatch_command
+from app.discord.command_plugin import CommandOption, DiscordCommandPlugin, is_valid_command_name, is_valid_option_name
+from app.discord.dispatch import CommandButton, CommandContext, CommandResponse, dispatch_command
 from app.event_bus import CommandFailed, CommandInvoked
 from app.plugins.base import PluginHealth, PluginPermission
 
@@ -107,3 +107,25 @@ def test_is_valid_command_name():
     assert is_valid_command_name("Has Spaces") is False
     assert is_valid_command_name("UPPERCASE") is False
     assert is_valid_command_name("a" * 33) is False
+
+
+def test_is_valid_option_name():
+    assert is_valid_option_name("symbol") is True
+    assert is_valid_option_name("Has Spaces") is False
+    assert is_valid_option_name("") is False
+
+
+def test_command_option_defaults_to_required():
+    option = CommandOption(name="symbol", description="Ticker symbol")
+    assert option.required is True
+
+
+def test_command_response_defaults_to_no_buttons():
+    response = CommandResponse(content="hi")
+    assert response.buttons == []
+
+
+def test_command_button_defaults_to_secondary_style():
+    button = CommandButton(label="Chart", custom_id="analyze:chart:NVDA")
+    assert button.style == "secondary"
+    assert button.disabled is False

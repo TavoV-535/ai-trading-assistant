@@ -24,9 +24,23 @@ log = get_logger(__name__)
 class PluginRegistry:
     """Owns the lifecycle of every loaded plugin."""
 
-    def __init__(self, event_bus: EventBus, settings: Any) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        settings: Any,
+        *,
+        reasoning_engine: Any | None = None,
+        evidence_aggregator: Any | None = None,
+        strategy_engine: Any | None = None,
+    ) -> None:
         self._event_bus = event_bus
         self._settings = settings
+        # Passed straight through to every PluginContext this registry
+        # builds — see PluginContext's docstring for why these three (and
+        # only these three) exist as a direct, non-event-bus reference.
+        self._reasoning_engine = reasoning_engine
+        self._evidence_aggregator = evidence_aggregator
+        self._strategy_engine = strategy_engine
         self._plugins: dict[str, PluginBase] = {}
         self._failed: dict[str, str] = {}
 
@@ -57,6 +71,9 @@ class PluginRegistry:
                 event_bus=self._event_bus,
                 settings=self._settings,
                 plugin_config=item.plugin_config,
+                reasoning_engine=self._reasoning_engine,
+                evidence_aggregator=self._evidence_aggregator,
+                strategy_engine=self._strategy_engine,
             )
 
             try:

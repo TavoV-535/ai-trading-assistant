@@ -36,9 +36,36 @@ class CommandContext:
 
 
 @dataclass(frozen=True)
+class CommandButton:
+    """One interactive button attached to a :class:`CommandResponse`.
+
+    Kept as a plain dataclass — never a real ``discord.ui.Button`` — so a
+    command plugin declaring buttons stays testable without discord.py,
+    exactly like ``CommandResponse`` itself. ``app/discord/bot.py`` is the
+    only place that turns this into a real Discord component.
+
+    ``custom_id`` convention: ``"{command}:{action}:{extra}"``, e.g.
+    ``"analyze:chart:NVDA"``. The Discord adapter treats the action segment
+    ``"dismiss"`` specially (deletes the message it's attached to); every
+    other action currently gets a generic "not built yet" reply, since the
+    systems some buttons imply (Chart/News/History/Backtest/Journal/Watch)
+    don't exist yet — see docs/MILESTONES.md for the roadmap. This
+    convention is generic, not specific to ``/analyze``: any future command
+    plugin can reuse the same ``dismiss`` action and get the same behavior
+    for free.
+    """
+
+    label: str
+    custom_id: str
+    style: str = "secondary"  # "primary" | "secondary" | "success" | "danger"
+    disabled: bool = False
+
+
+@dataclass(frozen=True)
 class CommandResponse:
     content: str
     ephemeral: bool = False
+    buttons: list[CommandButton] = field(default_factory=list)
 
 
 async def dispatch_command(

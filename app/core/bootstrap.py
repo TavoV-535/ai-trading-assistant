@@ -78,7 +78,16 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     reasoning_engine = ReasoningEngine(settings, provider=provider)
     reasoning_engine.attach(event_bus)
 
-    plugin_registry = PluginRegistry(event_bus, settings)
+    # Command plugins (e.g. /analyze) may need to read the *current*
+    # evidence/reasoning state synchronously, not just react to events — see
+    # PluginContext's docstring for the scope of this exception.
+    plugin_registry = PluginRegistry(
+        event_bus,
+        settings,
+        reasoning_engine=reasoning_engine,
+        evidence_aggregator=evidence_aggregator,
+        strategy_engine=strategy_engine,
+    )
     await plugin_registry.load_all(root)
 
     discord_bot: TradingBot | None = None
