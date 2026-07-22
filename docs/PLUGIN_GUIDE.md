@@ -99,6 +99,31 @@ Loaded automatically into `context.plugin_config`. This is what
 "Configuration over Code" means at the plugin level — never hardcode a
 tunable value in `plugin.py`.
 
+## 3.5. Use `app.indicators`, don't recalculate
+
+`PROJECT.md`'s Indicator System explicitly says "no duplicate
+calculations" — if you're writing a new indicator plugin, the RSI example
+above is illustrative, but the calculation itself (`rsi_value = ...`)
+should never be hand-rolled in `plugin.py`. Use the shared library instead:
+
+- `app.indicators.bar.SymbolWindow` — a bounded per-symbol rolling history
+  of bars (default 300). Call `.append(bar_from_event(event))` on every
+  `MarketDataUpdated`, then read `.closes` / `.highs` / `.lows` /
+  `.volumes`.
+- `app.indicators.math` — pure calculation functions (`sma`, `ema_step`,
+  `rsi`, `macd`, `atr`, `adx`, `bollinger_bands`, `donchian_channel`,
+  `supertrend`, `obv`, `vwap`, `volume_profile`, `cci`, `ichimoku`). Every
+  one returns `None` when there isn't enough history yet instead of
+  raising — check for that before publishing evidence, the same way
+  `EMAPlugin` checks `state.updates < 2`.
+
+See `plugins/indicators/rsi/plugin.py` (and any of its 12 siblings added in
+Milestone 3) for the real, current version of the pattern sketched above —
+in particular, note that it fires evidence only on the RSI *crossing* the
+70/30 threshold (edge-triggered), not on every update where RSI happens to
+already be above 70, so a symbol sitting in overbought territory doesn't
+spam a fresh piece of evidence on every tick.
+
 ## 4. What you get for free
 
 - **Auto-discovery** — drop the folder in, restart the app, it's live. No

@@ -1,0 +1,4 @@
+# Default config for the SMA indicator plugin.
+fast: 20
+slow: 50
+window: 300

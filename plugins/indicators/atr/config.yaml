@@ -1,0 +1,6 @@
+# Default config for the ATR indicator plugin.
+period: 14
+# Fire volatility-expansion evidence when ATR jumps to at least this
+# multiple of its previous reading.
+expansion_ratio: 1.5
+window: 300

@@ -15,6 +15,7 @@ from typing import Any
 
 from app.event_bus import EvidenceProduced, IndicatorCalculated, MarketDataUpdated
 from app.evidence import Evidence, EvidenceCategory
+from app.indicators.math import ema_step as _ema_step
 from app.logging import get_logger
 from app.plugins.base import PluginBase, PluginHealth, PluginPermission
 
@@ -32,13 +33,6 @@ class _SymbolState:
         self.prev_fast: float | None = None
         self.prev_slow: float | None = None
         self.updates: int = 0
-
-
-def _ema_step(previous: float | None, price: float, period: int) -> float:
-    if previous is None:
-        return price
-    alpha = 2 / (period + 1)
-    return price * alpha + previous * (1 - alpha)
 
 
 class EMAPlugin(PluginBase):

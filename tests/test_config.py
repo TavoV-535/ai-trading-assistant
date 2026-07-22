@@ -20,8 +20,11 @@ def test_env_var_overrides_yaml(monkeypatch):
 
 
 def test_secrets_default_to_none(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    # The autouse `_isolated_settings` fixture (conftest.py) already shadows
+    # these with "" so this test doesn't depend on whether a real .env
+    # happens to exist in the project root — `delenv` alone wouldn't be
+    # enough since a real .env file is a separate, lower-priority settings
+    # source that `delenv` can't reach.
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.has_anthropic_key is False

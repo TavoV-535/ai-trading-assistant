@@ -10,14 +10,17 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestone 1 (Core Architecture) and Milestone 2 (Discord Bot Skeleton): complete.**
+**Milestones 1-3 complete: Core Architecture, Discord Bot Skeleton, and the
+Indicator Library.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
-database layer, and local deployment are built (Milestone 1), and the
-Discord bot now connects, exposes `/help` and a reference `/ping` command,
-and routes every command through the same event-driven, plugin-first
-architecture (Milestone 2) — a new slash command is a plugin, exactly like
-an indicator. See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's
+database layer, and local deployment are built (Milestone 1); the Discord
+bot connects, exposes `/help` and a reference `/ping` command, and routes
+every command through the same event-driven, plugin-first architecture
+(Milestone 2); and 14 indicator plugins (EMA, SMA, VWAP, RSI, MACD, ATR,
+ADX, Bollinger, Supertrend, OBV, CCI, Ichimoku, Donchian, Volume Profile)
+share one calculation library and publish evidence, never a signal
+(Milestone 3). See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's
 done and what's next.
 
 ## Quick start (Docker — recommended)
@@ -73,7 +76,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-46 tests, ~92% coverage of `app/` as of Milestone 2. Live Discord gateway
+111 tests, ~93% coverage of `app/` as of Milestone 3. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -91,8 +94,9 @@ app/
   reasoning/    # Reasoning Engine + Claude provider
   db/           # SQLAlchemy models, Repository pattern, event persistence
   core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins)
+  indicators/   # shared calculation library every indicator plugin uses (not a plugin itself)
 plugins/        # actual plugins live here, auto-discovered — see docs/PLUGIN_GUIDE.md
-  indicators/ema/
+  indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   commands/ping/
 alembic/        # migrations (async, driven by app.config settings)
 docker/         # Dockerfile, docker-compose.yml, entrypoint.sh

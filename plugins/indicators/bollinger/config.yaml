@@ -1,0 +1,4 @@
+# Default config for the Bollinger Bands indicator plugin.
+period: 20
+num_std: 2.0
+window: 300

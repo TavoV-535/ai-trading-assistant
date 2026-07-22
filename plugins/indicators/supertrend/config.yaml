@@ -1,0 +1,4 @@
+# Default config for the Supertrend indicator plugin.
+period: 10
+multiplier: 3.0
+window: 300

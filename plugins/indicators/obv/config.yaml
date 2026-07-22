@@ -1,0 +1,3 @@
+# Default config for the OBV indicator plugin.
+signal_period: 20
+window: 300

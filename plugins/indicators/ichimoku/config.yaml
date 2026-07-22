@@ -1,0 +1,5 @@
+# Default config for the Ichimoku Cloud indicator plugin.
+tenkan_period: 9
+kijun_period: 26
+senkou_b_period: 52
+window: 300

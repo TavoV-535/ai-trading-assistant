@@ -54,27 +54,75 @@ a fake `Interaction`), event publishing, error isolation — is unit tested.
 already, put the token + guild ID in `.env`, run `docker compose up`, and
 try `/ping` and `/help` in your VerserTrades server.
 
+## Milestone 3 — Indicator Library ✅ complete
+
+- `app/indicators/` — core (not a plugin) shared infrastructure every
+  indicator plugin builds on, so no two plugins ever reimplement the same
+  formula (`PROJECT.md`'s Indicator System: "No duplicate calculations"):
+  - `bar.py` — `Bar`, bounded per-symbol `SymbolWindow` (default 300-bar
+    rolling history), `bar_from_event()` (turns a `MarketDataUpdated` tick
+    into a bar, degrading gracefully to open == high == low == close ==
+    price when only tick data is available)
+  - `math.py` — pure, stateless calculation functions (`sma`, `ema_step`/
+    `ema_series`, `rsi`, `macd`, `atr`, `adx`, `bollinger_bands`,
+    `donchian_channel`, `supertrend`, `obv`, `vwap`, `volume_profile`,
+    `cci`, `ichimoku`) — every one returns `None` on insufficient history
+    rather than raising
+- `MarketDataUpdated` extended with optional `open`/`high`/`low`/`close`
+  fields (non-breaking — tick-only plugins like EMA are unaffected) so
+  bar-based indicators (ATR, ADX, Supertrend, Ichimoku, Donchian) have a
+  real trading range to work with
+- 13 new indicator plugins under `plugins/indicators/`, each following the
+  `EMAPlugin` pattern and publishing edge-triggered evidence (a crossing or
+  regime change, never "value is currently above X" on every tick): SMA,
+  VWAP, RSI, MACD, ATR, ADX, Bollinger, Supertrend, OBV, CCI, Ichimoku,
+  Donchian, Volume Profile — 14 indicators total including Milestone 1's
+  EMA
+- `EMAPlugin` refactored to import `ema_step` from `app.indicators.math`
+  instead of defining its own copy — the same "no duplicate calculations"
+  rule applied retroactively to the reference plugin
+- Volume-dependent plugins (VWAP, OBV, Volume Profile) report a `degraded`
+  health status rather than silently publishing all-zero evidence forever
+  when the market data feed never carries real volume
+- Fixed a test-isolation gap surfaced by this milestone: the suite now
+  always shadows Discord/Anthropic/broker secrets with empty env vars
+  (`tests/conftest.py`) so a real local `.env` — like the one created
+  following `docs/DISCORD_BOT_SETUP.md` for Milestone 2's live
+  verification — never changes what the test suite sees
+- 111 tests passing (34 new math tests + 31 new plugin tests + 46 fixes/
+  updates to existing tests for the larger registry), ~93% coverage of
+  `app/`, ruff clean
+
+**Design choices worth knowing about:** indicators that need history (RSI,
+MACD, ATR, ADX, Supertrend) recompute over the retained rolling window each
+update rather than carrying continuous incremental state — simpler to read,
+test, and verify by hand, at the cost of a small EMA/Wilder "seed bias"
+that's negligible once the window is several multiples of the indicator's
+period (window defaults to 300 bars; the longest period in this milestone
+is Ichimoku's 52). Some indicators encode a specific interpretation where
+technical analysis has more than one school of thought — e.g. Bollinger and
+CCI here use the breakout/continuation reading, not mean-reversion — and
+say so in their docstrings so it's an explicit, visible choice rather than
+a silent assumption.
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **Indicator library** — SMA, VWAP, RSI, MACD, ATR, ADX, Bollinger,
-   Supertrend, OBV, CCI, Ichimoku, Donchian, Volume Profile, each as its own
-   plugin following the EMA pattern (`docs/PLUGIN_GUIDE.md`).
-2. **Strategy Engine** — YAML/JSON strategy recipes that reference evidence
+1. **Strategy Engine** — YAML/JSON strategy recipes that reference evidence
    by category/source, a minimum-score gate, `StrategyMatched` events.
-3. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
+2. **`/analyze SYMBOL`** — the first command with a real parameter (needs a
    small extension to `DiscordCommandPlugin` for declaring slash-command
    options): pulls evidence + reasoning output for a symbol, renders as an
    interactive message with buttons (Chart / News / History / Backtest /
    Journal / Watch / Dismiss).
-4. **Scanner Engine** — continuous per-minute evidence generation across a
+3. **Scanner Engine** — continuous per-minute evidence generation across a
    watchlist, multiple timeframes and asset classes.
-5. **News / Earnings / Macro engines** — each a plugin category, each only
+4. **News / Earnings / Macro engines** — each a plugin category, each only
    ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
    directive.
-6. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
+5. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach

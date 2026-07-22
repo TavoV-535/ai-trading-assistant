@@ -1,0 +1,4 @@
+# Default config for the ADX indicator plugin.
+period: 14
+trend_threshold: 25
+window: 300

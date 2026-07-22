@@ -1,0 +1,4 @@
+# Default config for the CCI indicator plugin.
+period: 20
+threshold: 100
+window: 300

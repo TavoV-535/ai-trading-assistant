@@ -45,10 +45,27 @@ class Event(BaseModel):
 
 
 class MarketDataUpdated(Event):
+    """A single price update. ``price`` is the only required field (a tick
+    or last-trade price is enough for tick-based indicators like EMA/SMA).
+
+    ``open``/``high``/``low``/``close`` are optional bar (candle) fields for
+    indicators that need a real trading range (ATR, ADX, Supertrend,
+    Ichimoku, Donchian, ...). When they're omitted — e.g. a raw tick feed —
+    indicator plugins that need them fall back to treating the tick as a
+    degenerate bar where open == high == low == close == price. A future
+    market-data-feed plugin that aggregates real candles can populate all
+    four without any change to this schema or to the indicators that
+    consume it.
+    """
+
     symbol: str
     price: float
     volume: int | None = None
     timeframe: str | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
 
 
 class PriceMoved(Event):
@@ -61,7 +78,14 @@ class PriceMoved(Event):
 class IndicatorCalculated(Event):
     symbol: str
     indicator: str
-    value: float | dict[str, float]
+    #: A single number for simple indicators (EMA's fast/slow aside — see
+    #: below), or a dict for multi-line indicators (MACD's line/signal/
+    #: histogram, Bollinger's upper/mid/lower, Ichimoku's four lines,
+    #: Supertrend's value+direction, ...). ``Any`` rather than ``float``
+    #: because Supertrend's direction is a string ("up"/"down"), not a
+    #: number — every other indicator's dict values happen to be floats,
+    #: but the schema shouldn't assume that stays true forever.
+    value: float | dict[str, Any]
     timeframe: str | None = None
 
 

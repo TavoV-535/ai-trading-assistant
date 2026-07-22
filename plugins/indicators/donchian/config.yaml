@@ -1,0 +1,3 @@
+# Default config for the Donchian Channel indicator plugin.
+period: 20
+window: 300

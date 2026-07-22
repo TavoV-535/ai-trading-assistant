@@ -89,6 +89,41 @@ on input. Evidence is immutable and published as an `EvidenceProduced`
 event, exactly like any other event — the Reasoning Engine subscribes to it
 the same way a Discord notifier plugin would.
 
+## Indicator library (`app/indicators/`, `plugins/indicators/`)
+
+`app/indicators/` is core, not a plugin — it's shared infrastructure every
+indicator plugin imports, which is what makes PROJECT.md's Indicator System
+rule ("no duplicate calculations") actually true instead of aspirational:
+
+- `bar.py` — `Bar` (one OHLCV bar), `SymbolWindow` (a bounded rolling
+  per-symbol history — every plugin holds one `dict[symbol, SymbolWindow]`
+  and never manages its own deque), and `bar_from_event()`, which turns a
+  `MarketDataUpdated` event into a `Bar`. If the event only carries `price`
+  (a raw tick), the tick becomes a degenerate bar (open == high == low ==
+  close == price) — bar-based indicators still work on tick data, just with
+  less intrabar range information until a real bar-aggregating feed plugin
+  exists.
+- `math.py` — pure, stateless calculation functions (`sma`, `ema_step`,
+  `rsi`, `macd`, `atr`, `adx`, `bollinger_bands`, `donchian_channel`,
+  `supertrend`, `obv`, `vwap`, `volume_profile`, `cci`, `ichimoku`). Every
+  function takes plain lists and returns `None` on insufficient history
+  instead of raising. Indicators needing history recompute over the whole
+  retained window each update (rather than each plugin carrying its own
+  continuously-compounding state) — simpler to test and verify by hand, at
+  the cost of a small EMA/Wilder seed bias that's negligible once the
+  window (300 bars by default) is several multiples of the period.
+
+`plugins/indicators/` holds 14 indicator plugins (EMA from Milestone 1;
+SMA, VWAP, RSI, MACD, ATR, ADX, Bollinger, Supertrend, OBV, CCI, Ichimoku,
+Donchian, Volume Profile from Milestone 3), all following the same shape:
+subscribe to `MarketDataUpdated`, append to a `SymbolWindow`, call into
+`app.indicators.math`, publish `IndicatorCalculated` every update, and
+publish `EvidenceProduced` only on an edge-triggered condition — a
+threshold crossing or trend flip, never "value is currently above X",
+which would otherwise spam fresh evidence on every single tick a symbol
+spends in an extreme state. See `docs/PLUGIN_GUIDE.md` for how to add
+another one.
+
 ## Reasoning Engine (`app/reasoning/`)
 
 Subscribes to `EvidenceProduced`, accumulates evidence per symbol (bounded

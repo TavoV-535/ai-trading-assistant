@@ -1,0 +1,5 @@
+# Default config for the MACD indicator plugin.
+fast: 12
+slow: 26
+signal: 9
+window: 300

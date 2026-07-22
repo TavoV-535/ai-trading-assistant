@@ -43,11 +43,17 @@ async def test_ema_plugin_publishes_indicator_and_evidence_on_cross(event_bus, s
         await event_bus.publish(MarketDataUpdated(symbol="NVDA", price=p, timeframe="1m"))
     await asyncio.sleep(0.1)
 
-    assert len(indicators) == len(prices)
-    assert any(e.value for e in indicators)
-    assert len(evidence) >= 1
+    # Filter to this plugin's own events — the registry now loads every
+    # Milestone 3 indicator plugin too, and they all subscribe to the same
+    # MarketDataUpdated events for this symbol.
+    ema_indicators = [e for e in indicators if e.indicator == "EMA"]
+    ema_evidence = [e for e in evidence if e.evidence.source == "EMA"]
 
-    ev = evidence[0].evidence
+    assert len(ema_indicators) == len(prices)
+    assert any(e.value for e in ema_indicators)
+    assert len(ema_evidence) >= 1
+
+    ev = ema_evidence[0].evidence
     assert ev.source == "EMA"
     assert ev.category == "Trend"
     assert ev.direction == "bullish"
