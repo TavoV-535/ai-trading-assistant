@@ -32,17 +32,33 @@ class PluginRegistry:
         reasoning_engine: Any | None = None,
         evidence_aggregator: Any | None = None,
         strategy_engine: Any | None = None,
+        market_data_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
         # Passed straight through to every PluginContext this registry
-        # builds — see PluginContext's docstring for why these three (and
-        # only these three) exist as a direct, non-event-bus reference.
+        # builds — see PluginContext's docstring for why these (and only
+        # these) exist as a direct, non-event-bus reference. Also passes
+        # itself (``plugin_registry=self``) so a command plugin can
+        # introspect what's currently loaded (e.g. ``/scan``'s status
+        # report) without a second wiring mechanism.
         self._reasoning_engine = reasoning_engine
         self._evidence_aggregator = evidence_aggregator
         self._strategy_engine = strategy_engine
+        # Mutable, not constructor-only: market data provider plugins load
+        # in an earlier phase than everything else (see bootstrap.py), so
+        # this starts as None and is set once the Market Data Abstraction
+        # Layer is actually built from those providers, before the second
+        # load_all() phase (scanners, indicators, commands) runs.
+        self._market_data_service = market_data_service
         self._plugins: dict[str, PluginBase] = {}
         self._failed: dict[str, str] = {}
+
+    def set_market_data_service(self, market_data_service: Any) -> None:
+        """Called once by bootstrap() after the Market Data Abstraction
+        Layer is constructed from the provider plugins loaded in phase
+        one — every PluginContext built by phase two onward sees it."""
+        self._market_data_service = market_data_service
 
     @property
     def plugins(self) -> dict[str, PluginBase]:
@@ -53,10 +69,20 @@ class PluginRegistry:
         """Plugin name -> error message, for plugins that failed to load/initialize."""
         return dict(self._failed)
 
-    async def load_all(self, project_root: Path) -> None:
-        """Discover every plugin under the configured search paths and initialize it."""
+    async def load_all(self, project_root: Path, *, search_paths: list[str] | None = None) -> None:
+        """Discover every plugin under the configured search paths and initialize it.
+
+        ``search_paths`` overrides ``settings.plugins.search_paths`` for
+        this call only — used by ``bootstrap()`` to load market data
+        provider plugins in an isolated first pass, before the Market Data
+        Abstraction Layer (which needs those provider instances to exist)
+        is built. Calling this more than once is safe: plugins already in
+        ``self._plugins`` are untouched, and a name collision across calls
+        is logged and skipped exactly like a collision within one call.
+        """
+        paths = search_paths if search_paths is not None else self._settings.plugins.search_paths
         discovered = discover_plugins(
-            search_paths=self._settings.plugins.search_paths,
+            search_paths=paths,
             project_root=project_root,
             disabled=self._settings.plugins.disabled,
         )
@@ -74,6 +100,8 @@ class PluginRegistry:
                 reasoning_engine=self._reasoning_engine,
                 evidence_aggregator=self._evidence_aggregator,
                 strategy_engine=self._strategy_engine,
+                market_data_service=self._market_data_service,
+                plugin_registry=self,
             )
 
             try:

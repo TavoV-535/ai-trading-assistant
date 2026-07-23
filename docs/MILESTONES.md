@@ -210,26 +210,115 @@ a silent assumption.
   actually published `MarketDataUpdated` for it. Same graceful-degradation
   pattern the Reasoning Engine already uses everywhere else.
 
+## Milestone 6 — Scanner Engine + Market Data Abstraction Layer + Discord Action Registry ✅ complete
+
+- **Market Data Abstraction Layer** (`app/marketdata/`, `plugins/market_data/`)
+  — the Scanner Engine never talks to a specific data source; only to
+  `MarketDataService`. `MarketDataProviderPlugin` (one method, `fetch(symbols,
+  timeframe) -> dict[str, Bar]`, on top of the Universal Plugin Contract) is
+  a plugin category exactly like indicators or commands. `MarketDataService`
+  is built once provider plugins have loaded, from a priority-ordered
+  `settings.market_data.providers` list, and does real multi-provider
+  failover: a provider that raises or doesn't have a symbol yet is skipped,
+  and the next configured provider is asked for whatever's still missing.
+  **Reference provider**: `plugins/market_data/replay/` (`ReplayProviderPlugin`)
+  — CSV replay (`{data_dir}/{SYMBOL}.csv`, looping once exhausted) with a
+  deterministic (seeded) synthetic-random-walk fallback for any symbol
+  without a CSV file, so the pipeline runs with zero external setup. Both
+  data sources are honestly labeled as development/replay data, never
+  presented as real market data.
+- **Scanner Engine** (`app/scanner/`, `plugins/scanners/`) — the first
+  continuous, always-on system in the platform. `ScannerPlugin` implements
+  the Universal Plugin Contract generically: `initialize()` starts a real
+  `asyncio` background task that calls `scan_once()` on a loop
+  (`interval_seconds` apart), fetching from `MarketDataService` (never a
+  specific provider) and publishing `MarketDataUpdated` per symbol/
+  timeframe — **never** calling an indicator plugin, the Evidence
+  Aggregator, or the Strategy Engine directly; everything downstream
+  discovers new data by subscribing to the Event Bus, exactly like any
+  other source of that event. A failed tick is logged, reflected in
+  `health()` as `degraded`, and retried next interval — never crashes the
+  process. Concrete scanners are almost entirely configuration (watchlist,
+  timeframes, interval, asset class), which is what makes "multiple
+  watchlists" and "multiple scanners simultaneously" true with zero shared-
+  logic changes: another `plugins/scanners/<name>/config.yaml` is a second,
+  independent scanner. **Reference scanner**: `plugins/scanners/core/`
+  (`CoreWatchlistScanner`).
+- **`PluginContext` gains `market_data_service` and `plugin_registry`**
+  (`app/plugins/base.py`) — the same documented, narrow, read-only-query
+  exception introduced in Milestone 5, extended to cover a scanner's
+  on-demand market data read and `/scan`'s introspection of what's
+  currently loaded. Plugin loading is now two explicit phases
+  (`app/core/bootstrap.py`): market data providers load first, then
+  `MarketDataService` is built from the result and handed to the registry,
+  then everything else (indicators, commands, scanners, ...) loads with a
+  real service already available.
+- **Discord Action Registry** (`app/discord/actions.py`) — centralizes what
+  Milestone 5 left per-command: button creation, click-callback
+  registration, shared styling, and placeholder behavior for the
+  platform's reusable actions (chart/news/history/backtest/journal/watch/
+  refresh/replay/coach/dismiss). A command plugin now declares which
+  actions it wants (`ACTION_REGISTRY.buttons_for(["chart", "watch",
+  "dismiss"], target=symbol)`) instead of constructing `CommandButton`s or
+  implementing click behavior. `custom_id` convention changed to
+  `"{action_key}:{target}"` (action-first, command-agnostic, superseding
+  Milestone 5's `"{command}:{action}:{extra}"`) so the same button behaves
+  identically regardless of which command attached it. `"dismiss"` is the
+  one action with a real handler today; giving any other action real
+  behavior later is one `ACTION_REGISTRY.register_handler(key, handler)`
+  call here, with zero changes to any command plugin already using it. A
+  documented (currently no-op) `requires_permission`/`check_permission`
+  seam exists for a future role/permission system.
+- **`/scan`** (`plugins/commands/scan/`) — zero-parameter status command
+  reporting every loaded scanner's watchlist/timeframes/interval/health and
+  the configured market data provider(s), using the same Action Registry
+  (Refresh / Dismiss) `/analyze` uses — concrete proof the registry is
+  reusable across commands, not `/analyze`-specific.
+- **`GET /scanners`** — mirrors `GET /plugins`/`GET /strategies`: loaded
+  scanner plugins plus configured market data providers.
+- 40 new tests (10 Market Data Abstraction Layer, 13 Scanner Plugin, 15
+  Action Registry, 4 `/scan` command, 1 full continuous-scanning-to-
+  `/analyze` integration test using a real `ScannerPlugin` ticking on a
+  real background loop over real compressed wall-clock time — no
+  hand-published `MarketDataUpdated`/`EvidenceProduced` anywhere in that
+  test) plus 4 existing tests updated for the new custom_id convention and
+  the two new registered commands (`/analyze`, `/scan`, `/ping`, `/help`);
+  199 tests passing total, ~94% coverage of `app/` (maintained from
+  Milestone 5), ruff clean. The reference scanner is disabled by default in
+  the test suite's `settings` fixture (`tests/conftest.py`) so it doesn't
+  spin up an unwanted background task in the ~150 other tests that load the
+  full plugin registry.
+- Live-verified end to end: a real `ScannerPlugin` (short interval) reading
+  a real `ReplayProviderPlugin` (synthetic random walk) → real indicator
+  plugins → real Evidence Aggregator → real Strategy Engine → `/analyze`
+  reflecting live-generated evidence, plus `/scan` reporting real scanner
+  health and `/analyze`'s buttons routed entirely through the Action
+  Registry (see the Milestone 6 completion report for the transcript).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **Scanner Engine** — continuous per-minute evidence generation across a
-   watchlist, multiple timeframes and asset classes. This is also what
-   unblocks `/analyze` from reporting `insufficient_evidence` for
-   real-world symbols nobody has manually fed data for yet.
-2. **News / Earnings / Macro engines** — each a plugin category, each only
+1. **News / Earnings / Macro engines** — each a plugin category, each only
    ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
    directive.
+2. **A real market data provider** (Polygon/Alpaca/Finnhub/similar) —
+   implements `MarketDataProviderPlugin` exactly like `ReplayProviderPlugin`
+   does; add it to `settings.market_data.providers` and the Scanner Engine
+   picks it up with zero changes. Needs a real API credential this
+   environment doesn't have, so it's a "when you're ready" item, not a
+   blocker for anything else.
 3. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach
    needs journaling; risk warnings need trade events already flowing).
-   These are also what would give `/analyze`'s Chart / News / History /
-   Backtest / Journal / Watch buttons real behavior instead of a
-   placeholder reply.
+   These are also what would give the Action Registry's Chart / News /
+   History / Backtest / Journal / Watch / Replay / Coach actions real
+   behavior instead of a placeholder reply — each is a single
+   `ACTION_REGISTRY.register_handler()` call once the backing system
+   exists.
 
 Say the word and the next milestone starts. Nothing here commits to a
 specific order — just say which one you want first.

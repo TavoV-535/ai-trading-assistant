@@ -31,6 +31,20 @@ Neither the Strategy Engine nor the Reasoning Engine subscribes to raw
 `EvidenceProduced` — the Evidence Aggregator is the single interface both
 of them consume (see below).
 
+The Indicator Plugins in that diagram get their `MarketDataUpdated` events
+from somewhere — as of Milestone 6, that "somewhere" is itself two more
+decoupled hops, never a specific data provider talking directly to a
+specific scanner:
+
+```
+Live Provider / Replay Engine / Historical DB / Paper Feed  (each a plugin)
+    → Market Data Abstraction Layer (MarketDataService.fetch())
+    → Scanner Plugin → MarketDataUpdated → Indicator Plugins → ...
+```
+
+A scanner never imports a provider, and a provider never imports a
+scanner — see "Market Data Abstraction Layer" and "Scanner Engine" below.
+
 ## Event Bus (`app/event_bus/`)
 
 `EventBus` is an async pub/sub broker. Every subscriber gets its own bounded
@@ -73,16 +87,20 @@ A plugin is handed a `PluginContext` at construction: the shared
 from an optional `config.yaml` next to `plugin.py`). That's the entire
 surface a plugin needs — it never reaches into core modules directly.
 
-`PluginContext` also carries `reasoning_engine`, `evidence_aggregator`, and
-`strategy_engine` — all default to `None`, and all exist for exactly one
-narrow, documented reason: a Discord command plugin sometimes needs to
-answer an on-demand, synchronous, read-only query (`/analyze NVDA` needs
-whatever the *current* evidence/reasoning state is right now, not whatever
-the next event happens to publish). A plugin may read from these; it may
-never use them to mutate state, publish on another system's behalf, or
-reach into a specific indicator plugin's internals — the Event Bus remains
-the only way to make something happen. See `PluginContext`'s docstring in
-`app/plugins/base.py` and the "Discord" section below.
+`PluginContext` also carries `reasoning_engine`, `evidence_aggregator`,
+`strategy_engine`, `market_data_service`, and `plugin_registry` — all
+default to `None`, and all exist for exactly one narrow, documented
+reason: a plugin sometimes needs to answer an on-demand, synchronous,
+read-only query instead of only reacting to events (`/analyze NVDA` needs
+whatever the *current* evidence/reasoning state is right now; a scanner
+plugin needs the *current* bar from the Market Data Abstraction Layer on
+every tick — it's the thing that starts the event chain, not something
+reacting to one; `/scan`'s status report needs to see what's currently
+loaded). A plugin may read from these; it may never use them to mutate
+state, publish on another system's behalf, or reach into a specific
+indicator plugin's internals — the Event Bus remains the only way to make
+something happen. See `PluginContext`'s docstring in `app/plugins/base.py`
+and the "Discord" and "Scanner Engine" sections below.
 
 **Discovery** (`app/plugins/loader.py`) walks every directory listed in
 `config.plugins.search_paths`, imports each `<plugin-folder>/plugin.py`,
@@ -113,6 +131,73 @@ category, not necessarily across categories). `confidence` is always 0–100.
 on input. Evidence is immutable and published as an `EvidenceProduced`
 event, exactly like any other event — the Reasoning Engine subscribes to it
 the same way a Discord notifier plugin would.
+
+## Market Data Abstraction Layer (`app/marketdata/`, `plugins/market_data/`)
+
+**The Scanner Engine never talks to Polygon, Alpaca, Finnhub, a CSV file,
+or any other specific data source directly — only to `MarketDataService`.**
+A market data provider (live feed, replay engine, historical database,
+paper trading feed, future broker API) is a plugin, exactly like an
+indicator or a Discord command: extend `MarketDataProviderPlugin`
+(`app/marketdata/provider.py`, one method — `fetch(symbols, timeframe) ->
+dict[str, Bar]` — on top of the Universal Plugin Contract), drop it under
+`plugins/market_data/`, and it's auto-discovered the same way.
+
+`MarketDataService` (`app/marketdata/service.py`) is built once, after
+provider plugins have loaded, from `settings.market_data.providers` — a
+priority-ordered list of provider names. `fetch()` asks each configured
+provider in turn for whatever symbols are still missing and merges the
+results, never letting a later (lower-priority) provider overwrite a
+symbol an earlier one already answered. A provider that raises (a live
+feed's connection drops) is logged and skipped, not fatal — the **future
+multi-provider failover** PROJECT.md asks for, working today even with a
+single provider configured, since adding a second is just adding another
+name to the list.
+
+**Reference provider:** `plugins/market_data/replay/` (`ReplayProviderPlugin`)
+— the only provider that can be built honestly without a real market data
+credential or network access. Two data sources in one plugin: if
+`data_dir` is configured, `{data_dir}/{SYMBOL}.csv` is replayed bar-by-bar
+(looping once exhausted — a genuine "replay engine"); any symbol without a
+CSV file gets a deterministic (seeded, so reproducible run-to-run)
+synthetic random walk instead, clearly fabricated data, never presented as
+real. This is what lets the whole pipeline run and be demoed with zero
+external setup.
+
+## Scanner Engine (`app/scanner/`, `plugins/scanners/`)
+
+The first continuous, always-on system in the platform. A scanner plugin
+(`ScannerPlugin`, one more `PluginBase` subclass) repeatedly asks
+`MarketDataService.fetch()` — never a specific provider — for the latest
+bar per symbol/timeframe in its configured watchlist, and publishes
+`MarketDataUpdated` for each one. **It never calls an indicator plugin
+directly** — indicator plugins already discover new data by subscribing
+to `MarketDataUpdated`, so a scanner's tick is indistinguishable from any
+other source of that event as far as the rest of the pipeline is
+concerned; this is the Event Bus's decoupling working exactly as
+designed, not a special case.
+
+`ScannerPlugin.initialize()` starts a real `asyncio` background task that
+calls `scan_once()` on a loop, sleeping `interval_seconds` between ticks
+(configurable per scanner). A failing tick is logged and reported via
+`health()` as `degraded`, then retried on the next interval — the same
+"isolate, don't crash the process" discipline every other plugin category
+follows.
+
+Concrete scanner plugins are expected to be almost entirely
+configuration — watchlist, timeframes, interval — which is what makes
+**"support multiple watchlists"** and **"run multiple scanners
+simultaneously"** true without writing new Python: another
+`plugins/scanners/<name>/config.yaml` is a second, independently-configured
+scanner, with zero changes to `app/scanner/plugin.py` or to any other
+scanner. `plugins/scanners/core/` (`CoreWatchlistScanner`) is the
+reference, the same role `EMA`/`Ping`/`Momentum Breakout`/`ReplayProvider`
+play for their respective categories.
+
+`GET /scanners` and the `/scan` Discord command both report the same
+underlying state (watchlist, timeframes, interval, health) — `/scan` reads
+`context.plugin_registry` directly, the same documented `PluginContext`
+read-only-query exception `/analyze` uses (see "Discord" below).
 
 ## Indicator library (`app/indicators/`, `plugins/indicators/`)
 
@@ -317,25 +402,42 @@ parameters (`/ping`, `/help`) skips this entirely, same as before.
 CommandButton]` — plain dataclasses (`label`, `custom_id`, `style`), never
 real discord.py components, so a command plugin declaring buttons stays
 testable without discord.py. `bot.py` turns these into a real
-`discord.ui.View` when sending the response. `custom_id` follows the
-convention `"{command}:{action}:{extra}"`; the adapter's button-click
-handler treats the action `"dismiss"` specially (deletes the message) and
-gives every other action an honest "not built yet" reply — generic, not
-specific to any one command, so a future command can reuse `dismiss` for
-free and get the same behavior.
+`discord.ui.View` when sending the response.
 
-**Reference plugin:** `plugins/commands/analyze/` (`/analyze SYMBOL`) is
-the first command exercising both of the above — one required `symbol`
-option, and seven buttons (Chart / News / History / Backtest / Journal /
-Watch / Dismiss), of which only Dismiss has real behavior today since the
-other six name systems (charting, news, history, backtesting, journaling,
-watchlists) that don't exist yet. It reads `context.evidence_aggregator`
+**Discord Action Registry (`app/discord/actions.py`).** Milestone 5 had
+each command build its own `CommandButton`s and left `bot.py` owning the
+one-size-fits-all click behavior. Milestone 6 centralizes both: a command
+plugin declares which reusable *actions* it wants —
+
+```python
+ACTION_REGISTRY.buttons_for(["chart", "news", "watch", "dismiss"], target=symbol)
+```
+
+— instead of constructing buttons or implementing click behavior. The
+registry owns button creation (consistent label/style per action key),
+callback registration, placeholder behavior (any action without a real
+handler registered gets a generic, honest "not built yet" reply), and a
+documented (currently no-op — no role/permission system exists yet)
+permission-check seam. `custom_id` convention is `"{action_key}:{target}"`
+— action-first and command-agnostic, so the same button behaves
+identically no matter which command attached it. `"dismiss"` is the one
+action with a real handler today (deletes the message); giving
+Chart/News/History/Backtest/Journal/Watch/Refresh/Replay/Coach real
+behavior later is `ACTION_REGISTRY.register_handler(key, handler)` once,
+here — every command already asking for that action key picks it up
+automatically, with zero command-plugin changes.
+
+**Reference plugins:** `plugins/commands/analyze/` (`/analyze SYMBOL`) —
+one required `symbol` option, seven actions (Chart / News / History /
+Backtest / Journal / Watch / Dismiss). Reads `context.evidence_aggregator`
 and `context.reasoning_engine` directly (the documented `PluginContext`
-exception above) to answer the query synchronously, and gracefully reports
-"insufficient evidence" for any symbol nothing has published
-`MarketDataUpdated` for yet — there's no live market data feed until the
-Scanner Engine milestone, so that's an expected, honest limitation, not a
-bug.
+exception above) to answer the query synchronously, and gracefully
+reports "insufficient evidence" for any symbol nothing has published
+`MarketDataUpdated` for yet. `plugins/commands/scan/` (`/scan`) — zero
+parameters, reports what the Scanner Engine is currently watching via
+`context.plugin_registry`, using the same Action Registry (Refresh /
+Dismiss) — proof the registry is genuinely reusable across commands, not
+`/analyze`-specific.
 
 **What can and can't be verified without a live Discord connection:** the
 whole pipeline up to and including "does this Interaction produce the right
@@ -349,22 +451,38 @@ real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
 
 `bootstrap()` brings systems up in dependency order (logging → event bus →
 database → Evidence Aggregator → Strategy Engine → Reasoning Engine →
-plugin registry → Discord bot) and `teardown()` reverses it. If
-`DISCORD_BOT_TOKEN` isn't set, the bot is skipped entirely and a warning is
-logged — the same graceful-degradation pattern used when no
-`ANTHROPIC_API_KEY` is set for the Reasoning Engine. `create_app()` wires
-both into a FastAPI ASGI [`lifespan`](https://fastapi.tiangolo.com/advanced/events/),
-which is also how **graceful shutdown** works: uvicorn intercepts
-SIGINT/SIGTERM, runs the lifespan shutdown phase (closing the Discord bot
-first, then plugins, then the event bus, then the database), and only then
-exits — so `docker compose stop` always tears everything down cleanly
-before the container exits.
+plugin registry) and `teardown()` reverses it. Plugin loading is
+deliberately two phases, not one:
+
+1. **Phase 1** — `plugin_registry.load_all(root, search_paths=["plugins/market_data"])`
+   loads only market data provider plugins. `MarketDataService` is then
+   built from the result (it needs concrete provider instances to exist)
+   and handed to the registry via `set_market_data_service()`.
+2. **Phase 2** — every remaining search path (indicators, commands,
+   scanners, strategies-adjacent categories, ...) loads normally, now with
+   a real `MarketDataService` available in every `PluginContext` — this is
+   what a scanner plugin's `initialize()` needs before it can start
+   ticking.
+
+If `DISCORD_BOT_TOKEN` isn't set, the bot is skipped entirely and a
+warning is logged — the same graceful-degradation pattern used when no
+`ANTHROPIC_API_KEY` is set for the Reasoning Engine, or when no market
+data provider is discoverable for `MarketDataService`. `create_app()`
+wires bootstrap/teardown into a FastAPI ASGI
+[`lifespan`](https://fastapi.tiangolo.com/advanced/events/), which is also
+how **graceful shutdown** works: uvicorn intercepts SIGINT/SIGTERM, runs
+the lifespan shutdown phase (closing the Discord bot first, then plugins
+— which cancels every scanner's background tick loop — then the event
+bus, then the database), and only then exits — so `docker compose stop`
+always tears everything down cleanly before the container exits.
 
 - `GET /health` — overall status, DB reachability, Discord connection
   state (`not_configured` / `connecting` / `connected`), per-plugin health
 - `GET /plugins` — loaded plugin metadata + any that failed to load
 - `GET /strategies` — loaded strategy definitions (required/optional
   evidence, minimum score, repeat policy)
+- `GET /scanners` — loaded scanner plugins (watchlist, timeframes,
+  interval, health) and the currently configured market data provider(s)
 
 ## Configuration (`app/config/`)
 

@@ -21,6 +21,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from app.discord.actions import ACTION_REGISTRY
 from app.discord.command_plugin import (
     CommandOption,
     DiscordCommandPlugin,
@@ -162,6 +163,12 @@ class TradingBot(discord.Client):
         return view
 
     def _build_button(self, spec: CommandButton) -> "discord.ui.Button":
+        """Button creation itself is generic (label/style/custom_id come
+        straight off the spec); click *behavior* belongs to the Discord
+        Action Registry (``app/discord/actions.py``), not to this bot —
+        that's what lets a new command reuse "watch" or "dismiss" and get
+        working behavior for free, and what lets a future milestone give
+        Chart/News/etc. real handlers without touching this file."""
         button = discord.ui.Button(
             label=spec.label,
             style=_BUTTON_STYLES.get(spec.style, discord.ButtonStyle.secondary),
@@ -170,25 +177,16 @@ class TradingBot(discord.Client):
         )
 
         async def _on_click(interaction: discord.Interaction) -> None:
-            # custom_id convention: "{command}:{action}:{extra}" — see
-            # CommandButton's docstring. "dismiss" is the only action with
-            # real behavior today; every other action names a system
-            # (Chart/News/History/Backtest/Journal/Watch) that doesn't
-            # exist yet, so it gets an honest placeholder instead of
-            # silently doing nothing or pretending to work.
-            parts = spec.custom_id.split(":")
-            action = parts[1] if len(parts) > 1 else parts[0]
+            key, target = ACTION_REGISTRY.parse_custom_id(spec.custom_id)
+            handler = ACTION_REGISTRY.handler_for(key)
+            if handler is None:
+                log.warning("unknown_action_clicked", custom_id=spec.custom_id)
+                return
+            if not ACTION_REGISTRY.check_permission(key):
+                await interaction.response.send_message("You don't have permission to do that.", ephemeral=True)
+                return
             try:
-                if action == "dismiss":
-                    if interaction.message is not None:
-                        await interaction.message.delete()
-                    else:
-                        await interaction.response.send_message("Dismissed.", ephemeral=True)
-                    return
-                await interaction.response.send_message(
-                    f"'{spec.label}' isn't built yet — see docs/MILESTONES.md for the roadmap.",
-                    ephemeral=True,
-                )
+                await handler(interaction, target)
             except Exception:
                 log.exception("button_interaction_failed", custom_id=spec.custom_id)
 

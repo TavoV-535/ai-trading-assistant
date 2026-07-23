@@ -20,6 +20,7 @@ from app.db.event_logger import attach_event_logger
 from app.discord.bot import TradingBot
 from app.event_bus.bus import EventBus
 from app.logging import configure_logging, get_logger
+from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
 from app.reasoning.engine import ReasoningEngine
 from app.reasoning.providers.claude_provider import ClaudeProvider
@@ -88,7 +89,18 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         evidence_aggregator=evidence_aggregator,
         strategy_engine=strategy_engine,
     )
-    await plugin_registry.load_all(root)
+
+    # Phase 1: market data provider plugins load first, in isolation. The
+    # Market Data Abstraction Layer can't exist until concrete provider
+    # instances do, and the Scanner Engine (phase 2) needs the abstraction
+    # layer, never a specific provider — see app/marketdata/service.py.
+    await plugin_registry.load_all(root, search_paths=["plugins/market_data"])
+    market_data_service = MarketDataService(settings, plugin_registry)
+    plugin_registry.set_market_data_service(market_data_service)
+
+    # Phase 2: everything else -- indicators, commands, scanners, ...
+    remaining_paths = [p for p in settings.plugins.search_paths if p != "plugins/market_data"]
+    await plugin_registry.load_all(root, search_paths=remaining_paths)
 
     discord_bot: TradingBot | None = None
     discord_task: "asyncio.Task[None] | None" = None
@@ -109,6 +121,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         plugins_loaded=len(plugin_registry.plugins),
         plugins_failed=len(plugin_registry.failed),
         strategies_loaded=len(strategy_engine.strategies),
+        market_data_providers=[p.provider_name for p in market_data_service.providers],
         discord_enabled=discord_bot is not None,
     )
 
@@ -120,6 +133,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         evidence_aggregator=evidence_aggregator,
         strategy_engine=strategy_engine,
         reasoning_engine=reasoning_engine,
+        market_data_service=market_data_service,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,

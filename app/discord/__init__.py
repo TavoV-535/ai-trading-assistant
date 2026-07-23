@@ -1,3 +1,4 @@
+from app.discord.actions import ACTION_REGISTRY, ActionDefinition, ActionRegistry
 from app.discord.bot import TradingBot
 from app.discord.command_plugin import (
     CommandOption,
@@ -17,4 +18,7 @@ __all__ = [
     "CommandButton",
     "dispatch_command",
     "TradingBot",
+    "ActionRegistry",
+    "ActionDefinition",
+    "ACTION_REGISTRY",
 ]

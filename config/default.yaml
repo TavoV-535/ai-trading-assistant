@@ -40,6 +40,7 @@ plugins:
     - "plugins/commands"
     - "plugins/integrations"
     - "plugins/risk"
+    - "plugins/market_data"
   # plugins listed here are skipped even if discovered
   disabled: []
 
@@ -75,3 +76,9 @@ aggregation:
   # bounded per-symbol history the aggregator retains (full sequence, not
   # just the fresh subset)
   max_history_per_symbol: 500
+
+market_data:
+  # Provider names to try, in priority order -- see app/marketdata/service.py.
+  # A symbol/timeframe the first provider doesn't have falls over to the
+  # next one instead of failing the whole fetch.
+  providers: ["replay"]

@@ -149,7 +149,7 @@ async def test_analyze_reports_matched_strategy_and_evidence_counts(event_bus, s
 
     labels = [b.label for b in response.buttons]
     assert labels == ["Chart", "News", "History", "Backtest", "Journal", "Watch", "Dismiss"]
-    assert response.buttons[-1].custom_id == "analyze:dismiss:NVDA"
+    assert response.buttons[-1].custom_id == "dismiss:NVDA"
     assert response.buttons[-1].style == "danger"
 
 

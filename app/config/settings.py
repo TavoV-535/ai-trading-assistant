@@ -83,6 +83,15 @@ class DiscordSection(BaseModel):
     command_prefix: str = "/"
 
 
+class MarketDataSection(BaseModel):
+    #: Provider names to try, in priority order (matched against each
+    #: MarketDataProviderPlugin's ``provider_name`` -- see
+    #: app/marketdata/service.py). A symbol/timeframe not served by the
+    #: first provider falls over to the next configured one instead of
+    #: failing the whole fetch.
+    providers: list[str] = Field(default_factory=lambda: ["replay"])
+
+
 class AggregationSection(BaseModel):
     #: How long a piece of evidence is considered "fresh" before it decays
     #: out of the Strategy Engine's / Reasoning Engine's active view. See
@@ -128,6 +137,7 @@ class Settings(BaseSettings):
     api: ApiSection = Field(default_factory=ApiSection)
     discord: DiscordSection = Field(default_factory=DiscordSection)
     aggregation: AggregationSection = Field(default_factory=AggregationSection)
+    market_data: MarketDataSection = Field(default_factory=MarketDataSection)
 
     @classmethod
     def settings_customise_sources(

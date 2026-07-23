@@ -6,13 +6,17 @@ current output for a symbol, and renders them as one message with
 interactive buttons: Chart / News / History / Backtest / Journal / Watch /
 Dismiss.
 
+Buttons come from the Discord Action Registry (``app/discord/actions.py``)
+— this plugin declares which actions it wants (``_ACTIONS`` below) and
+asks ``ACTION_REGISTRY.buttons_for()`` for the real ``CommandButton``s,
+rather than constructing them or implementing click behavior itself.
 Only "Dismiss" actually does something today (it deletes the message) —
 the other six name systems that don't exist yet (no charting, no news
 engine, no history/backtest/journal/watchlist systems — see
 docs/MILESTONES.md's "Proposed order for what's next"), so clicking them
 gets an honest "not built yet" reply instead of doing nothing silently or
-pretending to work. That behavior lives generically in
-``app/discord/bot.py``'s button handling, not here.
+pretending to work. When those systems exist, registering their real
+handlers with the Action Registry is enough — this plugin won't change.
 
 This plugin reads ``context.evidence_aggregator`` and
 ``context.reasoning_engine`` directly — a deliberate, narrow, documented
@@ -35,13 +39,18 @@ from __future__ import annotations
 from typing import Any
 
 from app.aggregation.models import AggregateSnapshot
+from app.discord.actions import ACTION_REGISTRY
 from app.discord.command_plugin import CommandOption, DiscordCommandPlugin
-from app.discord.dispatch import CommandButton, CommandContext, CommandResponse
+from app.discord.dispatch import CommandContext, CommandResponse
 from app.logging import get_logger
 from app.plugins.base import PluginHealth, PluginPermission
 from app.reasoning.engine import ReasoningOutput
 
 log = get_logger(__name__)
+
+#: Which reusable Discord actions this command wants — see
+#: app/discord/actions.py. Order here is the order buttons render in.
+_ACTIONS = ["chart", "news", "history", "backtest", "journal", "watch", "dismiss"]
 
 
 class AnalyzePlugin(DiscordCommandPlugin):
@@ -93,7 +102,7 @@ class AnalyzePlugin(DiscordCommandPlugin):
 
         return CommandResponse(
             content=_format_analysis(symbol, snapshot, output),
-            buttons=_buttons_for(symbol),
+            buttons=ACTION_REGISTRY.buttons_for(_ACTIONS, target=symbol),
         )
 
 
@@ -120,15 +129,3 @@ def _format_analysis(symbol: str, snapshot: AggregateSnapshot, output: Reasoning
     )
 
     return "\n".join(lines)
-
-
-def _buttons_for(symbol: str) -> list[CommandButton]:
-    return [
-        CommandButton(label="Chart", custom_id=f"analyze:chart:{symbol}"),
-        CommandButton(label="News", custom_id=f"analyze:news:{symbol}"),
-        CommandButton(label="History", custom_id=f"analyze:history:{symbol}"),
-        CommandButton(label="Backtest", custom_id=f"analyze:backtest:{symbol}"),
-        CommandButton(label="Journal", custom_id=f"analyze:journal:{symbol}"),
-        CommandButton(label="Watch", custom_id=f"analyze:watch:{symbol}"),
-        CommandButton(label="Dismiss", custom_id=f"analyze:dismiss:{symbol}", style="danger"),
-    ]

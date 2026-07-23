@@ -10,9 +10,10 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-5 complete: Core Architecture, Discord Bot Skeleton, the
-Indicator Library, the Strategy Engine + Evidence Aggregator, and
-`/analyze SYMBOL`.**
+**Milestones 1-6 complete: Core Architecture, Discord Bot Skeleton, the
+Indicator Library, the Strategy Engine + Evidence Aggregator,
+`/analyze SYMBOL`, and the Scanner Engine + Market Data Abstraction Layer
++ Discord Action Registry.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -25,9 +26,16 @@ an Evidence Aggregator normalizes/dedupes/decays that evidence for two
 downstream consumers — a declarative, YAML-only Strategy Engine (knows
 nothing about any specific indicator) and the Reasoning Engine, which
 mentions matched strategies by name in its non-directive synthesis
-(Milestone 4); and `/analyze SYMBOL` is the first command with a real
+(Milestone 4); `/analyze SYMBOL` is the first command with a real
 parameter, pulling the current evidence + reasoning state for a symbol
-into an interactive message with buttons (Milestone 5). See
+into an interactive message with buttons (Milestone 5); and the platform
+is now continuous end to end — a Scanner Engine ticks on a real background
+loop, reading market data only through a provider-agnostic Market Data
+Abstraction Layer (a CSV-replay/synthetic-random-walk reference provider
+ships today; a real live feed is a future provider plugin, zero Scanner
+Engine changes needed), while a centralized Discord Action Registry gives
+`/analyze` and the new `/scan` status command consistent, reusable buttons
+instead of each command building its own (Milestone 6). See
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
 next.
 
@@ -52,11 +60,15 @@ app, and (if a token is set) connects the Discord bot. Check it's alive:
 curl http://localhost:8000/health   # includes "discord": "connected" | "connecting" | "not_configured"
 curl http://localhost:8000/plugins
 curl http://localhost:8000/strategies
+curl http://localhost:8000/scanners
 ```
 
-In Discord, try `/ping`, `/help`, and `/analyze SYMBOL` (reports
-`insufficient_evidence` for any symbol until a market data feed exists —
-see `docs/MILESTONES.md`).
+In Discord, try `/ping`, `/help`, `/scan` (what the Scanner Engine is
+currently watching), and `/analyze SYMBOL` — the reference scanner watches
+NVDA/AAPL/TSLA against the bundled synthetic-random-walk data provider by
+default, so `/analyze NVDA` should show real, continuously-generated
+evidence within a few seconds of the app starting. Any other symbol
+reports `insufficient_evidence` until a scanner is configured to watch it.
 
 Stop everything with `./scripts/stop.sh`.
 
@@ -87,7 +99,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-159 tests, ~94% coverage of `app/` as of Milestone 5. Live Discord gateway
+199 tests, ~94% coverage of `app/` as of Milestone 6. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -101,17 +113,21 @@ app/
   event_bus/    # the async pub/sub bus + every core Event schema
   evidence/     # the Universal Evidence Object
   plugins/      # PluginBase contract + auto-discovery + registry
-  discord/      # TradingBot + DiscordCommandPlugin contract + command dispatch
+  discord/      # TradingBot + DiscordCommandPlugin contract + command dispatch + Action Registry
   reasoning/    # Reasoning Engine + Claude provider
   db/           # SQLAlchemy models, Repository pattern, event persistence
-  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies)
+  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies, /scanners)
   indicators/   # shared calculation library every indicator plugin uses (not a plugin itself)
   aggregation/  # Evidence Aggregator — dedup/freshness/conflict detection (not a plugin itself)
   strategy/     # Strategy Engine — compiles declarative YAML into a rule graph (not a plugin itself)
+  marketdata/   # Market Data Abstraction Layer — provider-agnostic fetch() + failover (not a plugin itself)
+  scanner/      # Scanner Plugin base — the continuous tick loop every scanner plugin shares
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
-  commands/     # ping/, analyze/ (the first command with a real parameter)
+  commands/     # ping/, analyze/, scan/
+  market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
+  scanners/     # core/ (reference watchlist scanner)
 alembic/        # migrations (async, driven by app.config settings)
 docker/         # Dockerfile, docker-compose.yml, entrypoint.sh
 docs/           # architecture, plugin guide, milestone tracker, Discord setup

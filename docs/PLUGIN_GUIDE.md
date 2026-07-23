@@ -265,40 +265,50 @@ string-typed — see `CommandOption`'s docstring in
 `app/discord/command_plugin.py` before a command needs int/float/bool/
 choice options.
 
-## 3.6. Interactive buttons
+## 3.6. Interactive buttons — declare actions, don't build buttons
 
-`CommandResponse.buttons` takes a list of `CommandButton(label, custom_id,
-style, disabled)`:
+Don't construct `CommandButton`s by hand. Import the Discord Action
+Registry and declare which reusable actions your command wants:
 
 ```python
-from app.discord.dispatch import CommandButton
+from app.discord.actions import ACTION_REGISTRY
+
+_ACTIONS = ["chart", "news", "watch", "dismiss"]
 
 return CommandResponse(
     content="...",
-    buttons=[
-        CommandButton(label="Watch", custom_id=f"analyze:watch:{symbol}"),
-        CommandButton(label="Dismiss", custom_id=f"analyze:dismiss:{symbol}", style="danger"),
-    ],
+    buttons=ACTION_REGISTRY.buttons_for(_ACTIONS, target=symbol),
 )
 ```
 
-`custom_id` convention: `"{command}:{action}:{extra}"`. The Discord
-adapter treats the action `"dismiss"` specially (deletes the message);
-every other action gets a generic "not built yet" reply unless you've
-built real handling for it — this is deliberately generic, not something
-you register per command, so reusing `dismiss` in a new command gets the
-same working behavior for free. See `plugins/commands/analyze/plugin.py`
-for the reference usage (seven buttons, one of which — Dismiss — has real
-behavior today, since the other six name systems that don't exist yet).
+The registry (`app/discord/actions.py`) owns button creation, click
+behavior, shared styling, and placeholder behavior — a command plugin
+never builds a `CommandButton` or implements click handling itself.
+`custom_id` convention: `"{action_key}:{target}"` (action-first, not
+command-first — the same `"chart"` button behaves identically no matter
+which command attached it). `"dismiss"` is the one action with a real
+handler today (deletes the message); every other registered action
+(chart/news/history/backtest/journal/watch/refresh/replay/coach) gets a
+generic, honest "not built yet" reply until a real handler is registered
+for it — see the module docstring for how a future milestone gives one of
+them real behavior without touching any command plugin. See
+`plugins/commands/analyze/plugin.py` (seven actions) and
+`plugins/commands/scan/plugin.py` (two actions, Refresh + Dismiss) for
+reference usage — the same registry, reused, is the point.
 
-## 3.7. Reading current evidence/reasoning state (read-only, on demand)
+If you ever need a one-off button an action doesn't cover, `CommandButton`
+(`label`, `custom_id`, `style`, `disabled`) is still a plain dataclass you
+can construct directly — but reach for the registry first.
+
+## 3.7. Reading current evidence/reasoning/market-data state (read-only, on demand)
 
 Most plugins only ever react to events. A command like `/analyze` needs
 something different: the *current* state, synchronously, right now — not
 whatever the next event happens to publish. For exactly this case,
-`PluginContext` carries three additional, optional references:
+`PluginContext` carries several additional, optional references:
 `context.evidence_aggregator`, `context.reasoning_engine`,
-`context.strategy_engine` (all default to `None` — handle that gracefully,
+`context.strategy_engine`, `context.market_data_service`,
+`context.plugin_registry` (all default to `None` — handle that gracefully,
 most unit tests won't supply them).
 
 ```python
@@ -436,3 +446,165 @@ See `tests/test_strategy_engine.py` for compilation/evaluation/repeat-policy
 tests, and `tests/test_pipeline_integration.py` for a full, real
 Indicator → Evidence Aggregator → Strategy Engine → Reasoning Engine run
 using this exact reference strategy.
+
+---
+
+# Writing a market data provider plugin
+
+A market data provider is a plugin — live feed, replay engine, historical
+database, paper trading feed, future broker API, all implementing the
+exact same contract. The Scanner Engine never imports a specific
+provider; adding one never requires touching `app/scanner/` or
+`app/marketdata/`.
+
+## 1. Create the folder and extend `MarketDataProviderPlugin`
+
+```python
+# plugins/market_data/my_feed/plugin.py
+from typing import Any
+
+from app.indicators.bar import Bar
+from app.marketdata.provider import MarketDataProviderPlugin
+from app.plugins.base import PluginHealth, PluginPermission
+
+
+class MyFeedPlugin(MarketDataProviderPlugin):
+    name = "MyFeed"
+    version = "0.1.0"
+    provider_name = "my_feed"  # matched against settings.market_data.providers
+
+    async def initialize(self) -> None:
+        ...  # open a connection, warm a cache, etc.
+
+    async def shutdown(self) -> None:
+        ...
+
+    async def health(self) -> PluginHealth:
+        return PluginHealth(status="healthy")
+
+    def config(self) -> dict[str, Any]:
+        return {}
+
+    def permissions(self) -> list[str]:
+        return [PluginPermission.MARKET_DATA_READ]
+
+    async def fetch(self, symbols: list[str], timeframe: str) -> dict[str, Bar]:
+        # Return the latest known Bar per symbol you currently have data
+        # for -- omit a symbol you don't have yet, never raise for that.
+        # Only raise for a genuine failure (connection down, query timed
+        # out, ...); MarketDataService treats an exception as "this
+        # provider is unavailable right now" and fails over to the next
+        # configured provider.
+        ...
+```
+
+## 2. Add it to `settings.market_data.providers`
+
+```yaml
+# config/default.yaml
+market_data:
+  providers: ["my_feed", "replay"]  # tried in this order
+```
+
+That's the whole integration — `MarketDataService` picks it up
+automatically the next time the app boots, and the Scanner Engine gets its
+data through it with zero changes to any scanner.
+
+## 3. What you must never do
+
+- Never let the Scanner Engine (or anything else) import your plugin
+  module directly — the whole point of `MarketDataService` is that
+  nothing downstream knows which provider answered `fetch()`.
+- Never raise for "no data for this symbol yet" — omit it from the
+  returned dict. Only raise for a genuine provider failure.
+- If your provider is push-based under the hood (a websocket feed), cache
+  the latest tick/bar per symbol internally and answer `fetch()` from that
+  cache — `fetch()` itself must always be a fast, synchronous-feeling
+  read, never a blocking wait for the next tick.
+
+## 4. Test it
+
+See `tests/test_marketdata.py` for `MarketDataService` failover/ordering
+tests against a duck-typed stub provider, and
+`plugins/market_data/replay/plugin.py` for the reference implementation
+(CSV replay with a deterministic synthetic-random-walk fallback).
+
+---
+
+# Writing a scanner plugin
+
+A scanner is the thing that makes the platform "continuous" — it
+repeatedly asks the Market Data Abstraction Layer for the latest bar per
+symbol/timeframe and publishes `MarketDataUpdated`. Indicator plugins
+already subscribe to that event, so a scanner never calls one directly.
+
+## 1. Almost always, just configuration
+
+The base class, `ScannerPlugin` (`app/scanner/plugin.py`), already
+implements the entire Universal Plugin Contract generically — a concrete
+scanner plugin is usually nothing but a class declaration and a
+`config.yaml`:
+
+```python
+# plugins/scanners/crypto/plugin.py
+from app.scanner.plugin import ScannerPlugin
+
+
+class CryptoWatchlistScanner(ScannerPlugin):
+    """A second, independently-configured scanner -- proves multiple
+    scanners can run simultaneously with zero shared-logic changes."""
+
+    name = "CryptoWatchlistScanner"
+    version = "0.1.0"
+```
+
+```yaml
+# plugins/scanners/crypto/config.yaml
+watchlist: ["BTC-USD", "ETH-USD"]
+timeframes: ["1m", "5m"]
+interval_seconds: 10
+asset_class: "crypto"
+```
+
+That's it — no Python beyond the class declaration, no registration step.
+`initialize()` starts a real background loop the moment this plugin
+loads; `interval_seconds` (falling back to `settings.scanner.interval_seconds`
+if omitted) controls how often it ticks.
+
+## 2. Only override `scan_once()` for genuinely different behavior
+
+The default `scan_once()` fetches every configured timeframe for the
+whole watchlist and publishes one `MarketDataUpdated` per symbol/
+timeframe pair. Override it only if a scanner needs different behavior
+(e.g. splitting a huge watchlist across multiple `fetch()` calls) — even
+then, keep publishing `MarketDataUpdated` as the only way data reaches
+the rest of the system.
+
+## 3. What you must never do
+
+- Never call an indicator plugin, the Evidence Aggregator, or the
+  Strategy Engine directly — publish `MarketDataUpdated` and let the
+  Event Bus do the rest, exactly like every other producer of that event.
+- Never import a specific market data provider module — read
+  `context.market_data_service.fetch(...)` only (see `PluginContext`'s
+  docstring in `app/plugins/base.py` for why this on-demand query is a
+  documented exception, not a violation, of "plugins only talk through
+  the Event Bus").
+
+## 4. Test it
+
+Construct a `ScannerPlugin` directly with a short `interval_seconds` and a
+fake/stub `market_data_service` rather than waiting on the reference
+config's real interval — see `tests/test_scanner_plugin.py`. See
+`tests/test_scanner_pipeline_integration.py` for a full, real
+Scanner → Market Data Abstraction Layer → Replay Provider →
+Indicator Plugins → Evidence Aggregator → Strategy Engine → `/analyze`
+run, ticking on a real background loop over real (compressed) wall-clock
+time — the proof that continuous scanning, not hand-published events,
+drives the whole pipeline.
+
+Note: the reference scanner (`CoreWatchlistScanner`) is disabled by
+default in the test suite's `settings` fixture (`tests/conftest.py`) so
+the ~150+ other tests that load the full plugin registry don't each spin
+up an unwanted long-running background task. Tests that want the real
+reference scanner enabled restore `settings.plugins.disabled` themselves.

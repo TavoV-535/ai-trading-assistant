@@ -27,17 +27,17 @@ def _fake_interaction(user_id: int = 111, guild_id: int | None = 222, channel_id
     return interaction
 
 
-async def test_bot_registers_help_ping_and_analyze_commands(event_bus, settings):
+async def test_bot_registers_help_ping_analyze_and_scan_commands(event_bus, settings):
     registry = PluginRegistry(event_bus, settings)
     await registry.load_all(PROJECT_ROOT)
 
     bot = TradingBot(settings, event_bus, registry)
     registered = bot.register_command_plugins()
 
-    assert sorted(registered) == ["analyze", "ping"]
+    assert sorted(registered) == ["analyze", "ping", "scan"]
 
     tree_commands = sorted(c.name for c in bot.tree.get_commands())
-    assert tree_commands == ["analyze", "help", "ping"]
+    assert tree_commands == ["analyze", "help", "ping", "scan"]
 
     await registry.shutdown_all()
 
@@ -263,7 +263,7 @@ async def test_response_with_buttons_attaches_a_view(event_bus, settings):
 
     response = CommandResponse(
         content="hello",
-        buttons=[CommandButton(label="Dismiss", custom_id="x:dismiss:NVDA", style="danger")],
+        buttons=[CommandButton(label="Dismiss", custom_id="dismiss:NVDA", style="danger")],
     )
     await bot._send_response(interaction, response)
 
@@ -283,7 +283,7 @@ async def test_dismiss_button_deletes_the_message(event_bus, settings):
     registry = PluginRegistry(event_bus, settings)
     bot = TradingBot(settings, event_bus, registry)
 
-    button = bot._build_button(CommandButton(label="Dismiss", custom_id="analyze:dismiss:NVDA", style="danger"))
+    button = bot._build_button(CommandButton(label="Dismiss", custom_id="dismiss:NVDA", style="danger"))
 
     interaction = _fake_interaction()
     interaction.message.delete = AsyncMock()
@@ -299,7 +299,7 @@ async def test_placeholder_button_sends_not_built_yet_reply(event_bus, settings)
     registry = PluginRegistry(event_bus, settings)
     bot = TradingBot(settings, event_bus, registry)
 
-    button = bot._build_button(CommandButton(label="Chart", custom_id="analyze:chart:NVDA"))
+    button = bot._build_button(CommandButton(label="Chart", custom_id="chart:NVDA"))
 
     interaction = _fake_interaction()
     await button.callback(interaction)

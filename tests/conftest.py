@@ -33,7 +33,22 @@ def _isolated_settings(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def settings():
-    return get_settings()
+    """A fresh Settings instance, with the reference scanner disabled by
+    default.
+
+    ``CoreWatchlistScanner.initialize()`` starts a real background
+    asyncio task the moment it's loaded (by design — see
+    ``app/scanner/plugin.py``; that's what "run continuously" means for a
+    real deployment). Left enabled, every one of the ~140 existing tests
+    that loads the full plugin registry would spin up an unwanted
+    long-running task. Tests that actually want to exercise scanning
+    override ``settings.plugins.disabled`` back to normal, or construct/
+    drive a ``ScannerPlugin`` directly with a short ``interval_seconds``
+    (see ``tests/test_scanner_plugin.py``).
+    """
+    s = get_settings()
+    s.plugins.disabled = [*s.plugins.disabled, "CoreWatchlistScanner"]
+    return s
 
 
 @pytest.fixture

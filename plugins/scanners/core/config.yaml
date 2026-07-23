@@ -1,0 +1,12 @@
+# plugins/scanners/core/config.yaml
+#
+# A short interval keeps local/dev usage lively (and makes the pipeline
+# easy to observe end to end); a real deployment against a paid live-feed
+# provider would want a much larger interval or a push-based provider
+# instead of polling this often. This is purely about how often the
+# Scanner Engine ASKS the Market Data Abstraction Layer for the latest
+# bar -- it says nothing about which provider actually answers.
+watchlist: ["NVDA", "AAPL", "TSLA"]
+timeframes: ["1m"]
+interval_seconds: 5
+asset_class: "stocks"

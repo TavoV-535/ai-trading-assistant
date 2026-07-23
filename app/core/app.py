@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.core.bootstrap import bootstrap, teardown
 from app.core.state import AppState
 from app.logging import get_logger
+from app.scanner.plugin import ScannerPlugin
 
 log = get_logger(__name__)
 
@@ -89,6 +90,25 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 }
                 for s in state.strategy_engine.strategies
             ]
+        }
+
+    @app.get("/scanners")
+    async def scanners() -> dict:
+        state: AppState = app.state.core
+        scanner_plugins = [p for p in state.plugin_registry.plugins.values() if isinstance(p, ScannerPlugin)]
+        return {
+            "market_data_providers": [p.provider_name for p in state.market_data_service.providers],
+            "loaded": [
+                {
+                    "name": s.name,
+                    "watchlist": list(s.watchlist),
+                    "timeframes": list(s.timeframes),
+                    "interval_seconds": s.interval_seconds,
+                    "asset_class": s.asset_class,
+                    "health": (await s.health()).model_dump(mode="json"),
+                }
+                for s in sorted(scanner_plugins, key=lambda s: s.name)
+            ],
         }
 
     return app

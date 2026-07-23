@@ -44,15 +44,17 @@ class CommandButton:
     exactly like ``CommandResponse`` itself. ``app/discord/bot.py`` is the
     only place that turns this into a real Discord component.
 
-    ``custom_id`` convention: ``"{command}:{action}:{extra}"``, e.g.
-    ``"analyze:chart:NVDA"``. The Discord adapter treats the action segment
-    ``"dismiss"`` specially (deletes the message it's attached to); every
-    other action currently gets a generic "not built yet" reply, since the
-    systems some buttons imply (Chart/News/History/Backtest/Journal/Watch)
-    don't exist yet — see docs/MILESTONES.md for the roadmap. This
-    convention is generic, not specific to ``/analyze``: any future command
-    plugin can reuse the same ``dismiss`` action and get the same behavior
-    for free.
+    Most command plugins never construct one of these directly — see
+    ``app/discord/actions.py``'s ``ACTION_REGISTRY.buttons_for()``, which
+    is the Discord Action Registry that owns button creation, click
+    behavior, and shared styling for the platform's reusable actions
+    (chart/news/history/backtest/journal/watch/refresh/replay/coach/
+    dismiss), so commands declare which actions they want instead of
+    hand-building ``CommandButton``s and reimplementing click behavior.
+
+    ``custom_id`` convention: ``"{action_key}:{target}"``, e.g.
+    ``"chart:NVDA"`` — action-first and command-agnostic, so the same
+    button behaves identically no matter which command attached it.
     """
 
     label: str

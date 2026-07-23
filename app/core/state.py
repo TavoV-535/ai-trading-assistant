@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from app.aggregation.aggregator import EvidenceAggregator
 from app.db.base import Database
 from app.event_bus.bus import EventBus
+from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
 from app.reasoning.engine import ReasoningEngine
 from app.strategy.engine import StrategyEngine
@@ -26,6 +27,7 @@ class AppState:
     evidence_aggregator: EvidenceAggregator
     strategy_engine: StrategyEngine
     reasoning_engine: ReasoningEngine
+    market_data_service: MarketDataService
     project_root: Path
     discord_bot: "TradingBot | None" = None
     discord_task: "asyncio.Task[None] | None" = None

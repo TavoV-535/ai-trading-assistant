@@ -1,0 +1,13 @@
+# plugins/market_data/replay/config.yaml
+#
+# Optional: point this at a directory of "{SYMBOL}.csv" files (columns:
+# open,high,low,close,volume) to replay real historical bars for those
+# symbols. Any symbol without a matching CSV file falls back to a
+# deterministic synthetic random walk instead -- fabricated data, never
+# real market data, just enough to exercise the pipeline with zero setup.
+data_dir: null
+
+# Synthetic random walk parameters (ignored for symbols served from CSV).
+seed: 1337
+start_price: 100.0
+volatility: 0.015
