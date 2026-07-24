@@ -69,6 +69,33 @@ Confidence Weighting Framework's "market regime" factor and the
 Reasoning Engine's synthesis — context *shapes* how evidence is read, it
 isn't evidence itself (see "Market Context Engine" below).
 
+As of Milestone 8, two more core systems sit downstream of
+`EvidenceAggregated`/`StrategyMatched`/`MarketContextUpdated`, each
+independently subscribed, neither calling the other directly:
+
+```
+EvidenceAggregated ────────┐
+StrategyMatched ───────────┼──→ Portfolio Intelligence Layer → SymbolProfileUpdated → /watchlist, /analyze
+MarketContextUpdated ──────┤
+                            └──→ Event Prioritization Engine → AlertGenerated → proactive Discord alert
+                                        ↑ reads cached confidence_trend from SymbolProfileUpdated (cache only, no republish)
+```
+
+The **Portfolio Intelligence Layer** continuously profiles every symbol on
+the configured watchlist and ranks them by a transparent priority score —
+shifting the assistant from reactive (`/analyze` on request) to proactive
+(a standing, always-current picture of what deserves attention). The
+**Event Prioritization Engine** independently scores the same candidate
+developments for whether they're worth interrupting the user about,
+publishing `AlertGenerated` only when a candidate clears a configurable
+threshold and isn't a recent duplicate. Each engine consumes the other's
+output purely as a cache-update input (Portfolio Intelligence Layer caches
+`AlertGenerated` for historical alert state; the Prioritization Engine
+caches `SymbolProfileUpdated`'s `confidence_trend`) — neither one's
+handler for the other's event ever triggers a new publish, so there's no
+cycle. See "Portfolio Intelligence Layer" and "Event Prioritization
+Engine" below.
+
 ## Event Bus (`app/event_bus/`)
 
 `EventBus` is an async pub/sub broker. Every subscriber gets its own bounded
@@ -92,10 +119,14 @@ Events (`app/event_bus/events.py`) are immutable Pydantic models —
 `BacktestFinished`, `JournalCreated`, `DailySummary`, `RiskWarning`, plus
 `EvidenceProduced` (wraps an `Evidence` object — see below),
 `EvidenceAggregated` (carries `weighted_evidence`, the Confidence
-Weighting Framework's output — see below), and `MarketContextUpdated`
-(the Market Context Engine's output — see below). Every event carries
-`event_id`, `timestamp`, `source`, and an optional `correlation_id` for
-tracing a chain of related events (e.g. a trade's full lifecycle).
+Weighting Framework's output — see below), `MarketContextUpdated`
+(the Market Context Engine's output — see below), and, as of Milestone 8,
+`SymbolProfileUpdated` (the Portfolio Intelligence Layer's output) and
+`AlertGenerated` (the Event Prioritization Engine's output — the one event
+type in the platform meant to reach the user unprompted). Every event
+carries `event_id`, `timestamp`, `source`, and an optional
+`correlation_id` for tracing a chain of related events (e.g. a trade's
+full lifecycle).
 
 ## Universal Plugin Contract (`app/plugins/`)
 
@@ -115,20 +146,30 @@ from an optional `config.yaml` next to `plugin.py`). That's the entire
 surface a plugin needs — it never reaches into core modules directly.
 
 `PluginContext` also carries `reasoning_engine`, `evidence_aggregator`,
-`strategy_engine`, `market_data_service`, `plugin_registry`, and (as of
-Milestone 7) `context_engine` — all default to `None`, and all exist for
-exactly one narrow, documented reason: a plugin sometimes needs to answer
-an on-demand, synchronous, read-only query instead of only reacting to
-events (`/analyze NVDA` needs whatever the *current* evidence/reasoning/
-context state is right now; a scanner plugin needs the *current* bar from
-the Market Data Abstraction Layer on every tick — it's the thing that
-starts the event chain, not something reacting to one; `/scan`'s status
-report needs to see what's currently loaded). A plugin may read from
-these; it may never use them to mutate state, publish on another
-system's behalf, or reach into a specific indicator plugin's internals —
-the Event Bus remains the only way to make something happen. See
-`PluginContext`'s docstring in `app/plugins/base.py` and the "Discord",
-"Scanner Engine", and "Market Context Engine" sections below.
+`strategy_engine`, `market_data_service`, `plugin_registry`,
+`context_engine` (Milestone 7), and (as of Milestone 8) `portfolio_engine`
+— all default to `None`, and all exist for exactly one narrow, documented
+reason: a plugin sometimes needs to answer an on-demand, synchronous,
+read-only query instead of only reacting to events (`/analyze NVDA` needs
+whatever the *current* evidence/reasoning/context/portfolio state is right
+now; a scanner plugin needs the *current* bar from the Market Data
+Abstraction Layer on every tick — it's the thing that starts the event
+chain, not something reacting to one; `/scan`'s status report needs to see
+what's currently loaded; `/watchlist` needs the *current* ranked watchlist
+on demand). A plugin may read from these; it may never use them to mutate
+state, publish on another system's behalf, or reach into a specific
+indicator plugin's internals — the Event Bus remains the only way to make
+something happen. See `PluginContext`'s docstring in `app/plugins/base.py`
+and the "Discord", "Scanner Engine", "Market Context Engine", and
+"Portfolio Intelligence Layer" sections below.
+
+Note: `portfolio_engine` is the only exception queried by *two* different
+core systems for two different reasons — command plugins read it
+synchronously (the pattern above), while the Event Prioritization Engine
+never touches it directly at all, only its `SymbolProfileUpdated` output
+via the Event Bus (see "Event Prioritization Engine" below) — a plugin
+reading a `PluginContext` field and a core engine reading another core
+engine's events are deliberately different relationships.
 
 **Discovery** (`app/plugins/loader.py`) walks every directory listed in
 `config.plugins.search_paths`, imports each `<plugin-folder>/plugin.py`,
@@ -405,6 +446,93 @@ underlying evidence." The Evidence Aggregator subscribes to
 `MarketContextUpdated` purely as a weighting input (the "market regime"
 factor) — it's never added to `active_evidence` itself.
 
+## Portfolio Intelligence Layer (`app/portfolio/`)
+
+Not a plugin — a core system, the same tier as the Evidence Aggregator or
+Market Context Engine. Continuously monitors every symbol in
+`settings.portfolio.watchlist` (config-driven membership — a symbol
+outside it is never profiled, so "watch a new symbol" is a config change,
+never a code change) and maintains a `SymbolProfile` per symbol,
+synthesizing:
+
+- **Current technical evidence** — active/bullish/bearish/neutral counts
+  and the Confidence Weighting Framework's `top_weight`/`avg_weight`,
+  reused directly from `EvidenceAggregated.weighted_evidence`, never
+  recomputed.
+- **External intelligence freshness** — whether News/Earnings/Macro
+  evidence has arrived within `portfolio.fundamental_freshness_seconds`.
+- **Market context** — the Market Context Engine's current labels for the
+  symbol, read purely via `MarketContextUpdated`.
+- **Confidence trend** — rising/falling/stable/unknown, from comparing the
+  older half against the recent half of a rolling window
+  (`portfolio.confidence_trend_window`) of average evidence weight.
+- **Strategy matches** — the most recent `StrategyMatched` names, bounded.
+- **Historical alert state** — `last_alert_at`/`alert_count`, cached
+  purely from observing the Event Prioritization Engine's `AlertGenerated`
+  output (never by deciding whether to alert itself — that stays the
+  Prioritization Engine's job, one layer downstream).
+
+`app/portfolio/scoring.py::compute_priority()` turns all of that into a
+transparent `[0, 100]` `priority_score` + `breakdown` dict — evidence
+strength, fundamental freshness, context intensity (capped so many labels
+don't dominate on count alone), confidence trend, a flat strategy-match
+bonus, and an alert-suppression *dampening* factor (configurable, default
+0.5×, never a hard zero) for a symbol alerted on within
+`portfolio.alert_suppression_seconds` — so the watchlist doesn't keep
+re-surfacing the same just-alerted development at the top, without hiding
+it either. Publishes `SymbolProfileUpdated`, edge-triggered on a
+meaningful (≥0.5) score change — the same "don't spam the bus" discipline
+every other engine in this codebase follows. `snapshot(symbol)` and
+`ranked_watchlist()` are read-only, deep-copy query methods — `/watchlist`
+and `/analyze`'s portfolio snippet both call them on demand rather than
+maintaining their own state.
+
+Never calls the Evidence Aggregator, Strategy Engine, Reasoning Engine, or
+Event Prioritization Engine directly — only `SymbolProfileUpdated` leaves
+this module, and only through the Event Bus (checked structurally in
+`tests/test_milestone8_pipeline_integration.py`).
+
+## Event Prioritization Engine (`app/prioritization/`)
+
+Also not a plugin — a core system sitting between the Evidence Aggregator
+(plus the Strategy Engine and Market Context Engine) and user
+notifications. Every candidate development it sees —
+`EvidenceAggregated`, `StrategyMatched`, `MarketContextUpdated` — is
+scored by `app/prioritization/scoring.py::compute_alert_score()`:
+
+| Factor | What it reads |
+| --- | --- |
+| Importance | Source-specific: a strategy match starts from a high flat base; a context shift's base depends on whether its `context_type` is inherently high-stakes (Gap Day, Risk-Regime, macro events) vs. routine (trend/volatility drift); raw evidence's base scales with the Confidence Weighting Framework's own weight for that item |
+| Novelty | `1 / occurrence_count` for evidence (a first sighting counts fully, a fifth repeat a fifth as much); always `1.0` for strategy/context candidates, since those are already edge-triggered one layer upstream |
+| Confidence change | A bonus when the Portfolio Intelligence Layer's cached `confidence_trend` for the symbol is rising or falling — "stable" contributes nothing, since nothing changed |
+| Urgency | A source-specific `[0, 1]` time-sensitivity signal (Gap Day / macro events score high; routine trend continuation scores low; raw evidence uses a documented magnitude proxy on the plugin's own `score`) |
+| User relevance | A flat bonus when the symbol is on the configured watchlist |
+
+Only a candidate whose total score clears `prioritization.alert_threshold`
+**and** isn't a duplicate within `prioritization.alert_cooldown_seconds`
+(tracked per `(symbol, alert_key)`) becomes a real `AlertGenerated` event
+— this is what "reduce notification fatigue while surfacing significant
+developments promptly" means concretely, not just a slogan. Every
+decision — accepted or suppressed, and why — is recorded in a bounded,
+queryable `decision_history(symbol)`, so the logic stays transparent
+without publishing every rejected candidate onto the bus.
+
+By default (`prioritization.watchlist_only: true`) only watchlist symbols
+are eligible for alerts at all. Watchlist membership is read directly from
+`settings.portfolio.watchlist` **at construction**, the same static config
+the Portfolio Intelligence Layer reads — deliberately not learned
+reactively from `SymbolProfileUpdated` sightings, which would leave a
+quiet watchlist symbol's very first legitimate alert candidate incorrectly
+filtered out as "not on watchlist" before it ever produced a profile
+update. The engine does subscribe to `SymbolProfileUpdated`, but purely to
+cache `confidence_trend` per symbol — a genuine cross-engine runtime
+signal, unlike watchlist membership.
+
+Never calls the Portfolio Intelligence Layer, Evidence Aggregator,
+Strategy Engine, or Reasoning Engine directly — only `AlertGenerated`
+leaves this module, and only through the Event Bus (checked structurally
+in `tests/test_milestone8_pipeline_integration.py`).
+
 ## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
 
 A strategy is **pure declarative YAML**, never Python — `plugins/strategies/
@@ -586,24 +714,44 @@ automatically, with zero command-plugin changes.
 **Reference plugins:** `plugins/commands/analyze/` (`/analyze SYMBOL`) —
 one required `symbol` option, seven actions (Chart / News / History /
 Backtest / Journal / Watch / Dismiss). Reads `context.evidence_aggregator`,
-`context.reasoning_engine`, and (Milestone 7) `context.context_engine`
-directly (the documented `PluginContext` exception above) to answer the
-query synchronously, and gracefully reports "insufficient evidence" for
-any symbol nothing has published `MarketDataUpdated` for yet. Its
-rendered output demonstrates all four Milestone 7 dimensions at once:
+`context.reasoning_engine`, `context.context_engine` (Milestone 7), and
+(Milestone 8) `context.portfolio_engine` directly (the documented
+`PluginContext` exception above) to answer the query synchronously, and
+gracefully reports "insufficient evidence" for any symbol nothing has
+published `MarketDataUpdated` for yet. Its rendered output demonstrates
 technical + fundamental evidence counts, a **Market context** line built
 from `context_engine.snapshot()` (market-wide context first, symbol-
-specific winning on any collision), and the top confidence-weighted
-evidence from `snapshot.weighted_evidence`. `plugins/commands/scan/`
-(`/scan`) — zero parameters, reports what the Scanner Engine is currently
-watching via `context.plugin_registry`, using the same Action Registry
+specific winning on any collision), the top confidence-weighted evidence
+from `snapshot.weighted_evidence`, and — additively, only when the symbol
+is on the configured watchlist — a **Watchlist priority** line from
+`portfolio_engine.snapshot(symbol)`. `plugins/commands/scan/` (`/scan`) —
+zero parameters, reports what the Scanner Engine is currently watching via
+`context.plugin_registry`, using the same Action Registry
 (Refresh / Dismiss) — proof the registry is genuinely reusable across
-commands, not `/analyze`-specific.
+commands, not `/analyze`-specific. `plugins/commands/watchlist/`
+(`/watchlist`, Milestone 8) — zero parameters, renders
+`portfolio_engine.ranked_watchlist()`: every configured symbol, highest
+priority first, with its evidence counts, matched strategies, active
+context, alert history, and full score breakdown — the proactive
+counterpart to `/analyze`'s on-demand, single-symbol view. Same Action
+Registry (Refresh / Dismiss) as `/scan`.
+
+**Proactive alert delivery (Milestone 8).** `AlertGenerated` is the one
+event type in the platform meant to reach the user unprompted — everything
+else above is command-driven, on demand. `TradingBot` subscribes to it at
+construction time (before the gateway connection is even open, so an early
+alert is queued, not lost) and posts a formatted message (symbol, title,
+score, urgency, transparent breakdown) to `settings.discord.alert_channel_id`
+if configured. Missing configuration, an uncached channel (falls back to
+`fetch_channel`), or a send failure are all logged and handled gracefully —
+the same non-fatal degradation pattern as a missing `DISCORD_BOT_TOKEN` —
+never crashes the bot or the event bus subscriber that delivered it.
 
 **What can and can't be verified without a live Discord connection:** the
 whole pipeline up to and including "does this Interaction produce the right
-`send_message` call" is unit tested with a duck-typed fake `Interaction`
-(see `tests/test_discord_bot.py`). Actually opening the gateway connection
+`send_message` call" (or, for alerts, the right `channel.send` call) is
+unit tested with a duck-typed fake `Interaction`/channel (see
+`tests/test_discord_bot.py`). Actually opening the gateway connection
 (`bot.start(token)`) can only be exercised against Discord's real servers —
 that happens when you run `docker compose up` on your own machine with a
 real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
@@ -611,11 +759,12 @@ real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
 ## Core / lifecycle (`app/core/`)
 
 `bootstrap()` brings systems up in dependency order (logging → event bus →
-database → Market Context Engine → Evidence Aggregator → Strategy Engine
-→ Reasoning Engine → plugin registry) and `teardown()` reverses it. The
-Context Engine is wired before the Aggregator only so bootstrap reads
-top-to-bottom the same way data actually flows — both attach purely via
-event-bus subscriptions, so the order doesn't functionally matter. Plugin
+database → Market Context Engine → Evidence Aggregator → Strategy Engine →
+Portfolio Intelligence Layer → Event Prioritization Engine → Reasoning
+Engine → plugin registry) and `teardown()` reverses it. This ordering is
+also just bootstrap reading top-to-bottom the same way data actually
+flows — every one of these attaches purely via event-bus subscriptions, so
+the actual order doesn't functionally matter to any of them. Plugin
 loading is deliberately two phases, not one:
 
 1. **Phase 1** — `plugin_registry.load_all(root, search_paths=["plugins/market_data"])`
@@ -647,6 +796,8 @@ always tears everything down cleanly before the container exits.
   evidence, minimum score, repeat policy)
 - `GET /scanners` — loaded scanner plugins (watchlist, timeframes,
   interval, health) and the currently configured market data provider(s)
+- `GET /watchlist` — the configured watchlist plus every symbol's current
+  ranked `SymbolProfile` from the Portfolio Intelligence Layer
 
 ## Configuration (`app/config/`)
 

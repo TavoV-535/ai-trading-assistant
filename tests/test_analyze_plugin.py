@@ -19,6 +19,7 @@ from app.discord.dispatch import CommandContext
 from app.event_bus import EvidenceProduced, MarketDataUpdated
 from app.evidence import Evidence, EvidenceCategory
 from app.plugins.base import PluginContext
+from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.reasoning.engine import ReasoningEngine
 from app.strategy.engine import StrategyEngine
 
@@ -250,3 +251,77 @@ async def test_analyze_without_context_engine_omits_market_context_line(event_bu
     response = await plugin.execute(ctx)
 
     assert "**Market context:**" not in response.content
+
+
+async def test_analyze_shows_watchlist_priority_when_symbol_is_on_the_watchlist(event_bus, settings):
+    settings.portfolio.watchlist = ["NVDA"]
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    reasoning_engine = ReasoningEngine(settings, provider=None)
+    reasoning_engine.attach(event_bus)
+    portfolio_engine = PortfolioIntelligenceEngine(settings)
+    portfolio_engine.attach(event_bus)
+
+    plugin = AnalyzePlugin(
+        PluginContext(
+            event_bus=event_bus, settings=settings, plugin_config={},
+            evidence_aggregator=aggregator, reasoning_engine=reasoning_engine,
+            portfolio_engine=portfolio_engine,
+        )
+    )
+    await plugin.initialize()
+
+    await event_bus.publish(
+        EvidenceProduced(source="EMA", evidence=_evidence("EMA", "Bullish EMA Cross", "bullish", score=20))
+    )
+    await asyncio.sleep(0.1)
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={"symbol": "nvda"})
+    response = await plugin.execute(ctx)
+
+    assert "**Watchlist priority:**" in response.content
+
+
+async def test_analyze_omits_watchlist_priority_when_symbol_is_not_on_the_watchlist(event_bus, settings):
+    settings.portfolio.watchlist = ["AAPL"]  # NVDA deliberately excluded
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    reasoning_engine = ReasoningEngine(settings, provider=None)
+    reasoning_engine.attach(event_bus)
+    portfolio_engine = PortfolioIntelligenceEngine(settings)
+    portfolio_engine.attach(event_bus)
+
+    plugin = AnalyzePlugin(
+        PluginContext(
+            event_bus=event_bus, settings=settings, plugin_config={},
+            evidence_aggregator=aggregator, reasoning_engine=reasoning_engine,
+            portfolio_engine=portfolio_engine,
+        )
+    )
+    await plugin.initialize()
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={"symbol": "nvda"})
+    response = await plugin.execute(ctx)
+
+    assert "**Watchlist priority:**" not in response.content
+
+
+async def test_analyze_without_portfolio_engine_omits_watchlist_priority_line(event_bus, settings):
+    """portfolio_engine defaults to None -- must degrade gracefully, never crash."""
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    reasoning_engine = ReasoningEngine(settings, provider=None)
+    reasoning_engine.attach(event_bus)
+
+    plugin = AnalyzePlugin(
+        PluginContext(
+            event_bus=event_bus, settings=settings, plugin_config={},
+            evidence_aggregator=aggregator, reasoning_engine=reasoning_engine,
+        )
+    )
+    await plugin.initialize()
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={"symbol": "nvda"})
+    response = await plugin.execute(ctx)
+
+    assert "**Watchlist priority:**" not in response.content

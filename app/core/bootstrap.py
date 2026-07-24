@@ -23,6 +23,8 @@ from app.event_bus.bus import EventBus
 from app.logging import configure_logging, get_logger
 from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
+from app.portfolio.engine import PortfolioIntelligenceEngine
+from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
 from app.reasoning.providers.claude_provider import ClaudeProvider
 from app.strategy.engine import StrategyEngine
@@ -78,6 +80,25 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     strategy_engine.load(root)
     strategy_engine.attach(event_bus)
 
+    # Portfolio Intelligence Layer maintains an evolving profile (evidence,
+    # external intelligence freshness, market context, confidence trend,
+    # matched strategies, historical alert state) per symbol on
+    # settings.portfolio.watchlist, ranking them by a transparent
+    # priority_score. Not a plugin -- a core service, the same tier as the
+    # Evidence Aggregator / Market Context Engine. See app/portfolio/engine.py.
+    portfolio_engine = PortfolioIntelligenceEngine(settings)
+    portfolio_engine.attach(event_bus)
+
+    # Event Prioritization Engine sits between the Evidence Aggregator (plus
+    # the Strategy Engine and Market Context Engine) and user notifications,
+    # scoring every candidate development and only publishing AlertGenerated
+    # for what actually clears the configured threshold and isn't a
+    # duplicate within the cooldown window. Reads settings.portfolio.watchlist
+    # directly (not via portfolio_engine) so watchlist membership is correct
+    # from t=0 -- see app/prioritization/engine.py's module docstring for why.
+    prioritization_engine = EventPrioritizationEngine(settings)
+    prioritization_engine.attach(event_bus)
+
     provider = None
     if settings.reasoning.enabled and settings.has_anthropic_key:
         provider = ClaudeProvider(
@@ -105,6 +126,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         evidence_aggregator=evidence_aggregator,
         strategy_engine=strategy_engine,
         context_engine=context_engine,
+        portfolio_engine=portfolio_engine,
     )
 
     # Phase 1: market data provider plugins load first, in isolation. The
@@ -140,6 +162,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         strategies_loaded=len(strategy_engine.strategies),
         market_data_providers=[p.provider_name for p in market_data_service.providers],
         discord_enabled=discord_bot is not None,
+        portfolio_watchlist=list(portfolio_engine.watchlist),
     )
 
     return AppState(
@@ -152,6 +175,8 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         reasoning_engine=reasoning_engine,
         market_data_service=market_data_service,
         context_engine=context_engine,
+        portfolio_engine=portfolio_engine,
+        prioritization_engine=prioritization_engine,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,

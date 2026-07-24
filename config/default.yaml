@@ -70,6 +70,10 @@ api:
 
 discord:
   command_prefix: "/"
+  # Channel ID the bot proactively posts AlertGenerated events to. Leave
+  # null to keep alerts decision-only (evaluated + logged, never posted) --
+  # useful during development, or before you've picked an alerts channel.
+  alert_channel_id: null
 
 aggregation:
   # how long (seconds) a piece of evidence stays "fresh" / active before it
@@ -135,3 +139,29 @@ confidence_weighting:
   contradiction_penalty: 0.5
   regime_aligned_boost: 1.2
   regime_opposed_penalty: 0.85
+
+portfolio:
+  # The configured set of symbols the Portfolio Intelligence Layer
+  # continuously monitors/profiles (app/portfolio/). A symbol outside this
+  # list is never tracked -- "watch a new symbol" is a config change here,
+  # not a code change. Matches the reference scanner's default watchlist
+  # so /watchlist has real data out of the box.
+  watchlist: ["NVDA", "AAPL", "TSLA"]
+  confidence_trend_window: 8
+  confidence_trend_margin: 0.05
+  notable_context_types: ["trend", "volatility", "gap", "exhaustion", "risk_regime", "macro_event"]
+  fundamental_freshness_seconds: 600
+  alert_suppression_seconds: 300
+  alert_suppression_factor: 0.5
+
+prioritization:
+  # A candidate (fresh evidence, a strategy match, a context shift) must
+  # score at least this high (0-100) to become a real Discord alert.
+  alert_threshold: 60.0
+  # Minimum time between two alerts sharing the same (symbol, alert_key) --
+  # the duplicate-suppression window that keeps the same development from
+  # re-alerting every time its underlying evidence re-fires.
+  alert_cooldown_seconds: 300
+  # Only watchlist symbols (portfolio.watchlist) are eligible for alerts.
+  watchlist_only: true
+  decision_log_size: 20

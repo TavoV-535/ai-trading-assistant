@@ -299,6 +299,53 @@ class MarketContextUpdated(Event):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SymbolProfileUpdated(Event):
+    """Published by the Portfolio Intelligence Layer
+    (``app/portfolio/engine.py``) whenever a tracked watchlist symbol's
+    evolving intelligence profile changes materially — not on every tick,
+    edge-triggered like everything else in this codebase. ``priority_score``
+    is what ``/watchlist`` ranks by; ``priority_breakdown`` keeps every
+    contributing factor visible for transparency, the same explainability
+    convention the Confidence Weighting Framework established
+    (``app/aggregation/weighting.py``)."""
+
+    symbol: str
+    priority_score: float = Field(ge=0.0, le=100.0)
+    priority_breakdown: dict[str, float] = Field(default_factory=dict)
+    bullish_count: int = 0
+    bearish_count: int = 0
+    neutral_count: int = 0
+    top_weight: float = 0.0
+    confidence_trend: str = "unknown"  # "rising" | "falling" | "stable" | "unknown"
+    context: dict[str, str] = Field(default_factory=dict)
+    matched_strategies: list[str] = Field(default_factory=list)
+    last_alert_at: datetime | None = None
+    alert_count: int = 0
+
+
+class AlertGenerated(Event):
+    """Published by the Event Prioritization Engine
+    (``app/prioritization/engine.py``) when a candidate development (fresh
+    evidence, a strategy match, a market context shift) clears the alert
+    threshold and isn't suppressed as a recent duplicate. This is the one
+    event type that's meant to actually reach the user — ``app/discord/
+    bot.py`` subscribes to it and posts to ``discord.alert_channel_id`` if
+    configured (graceful no-op, logged, if it isn't).
+
+    ``symbol`` is ``None`` for a market-wide alert (e.g. a Risk-Off regime
+    shift). ``breakdown`` mirrors every other explainability convention in
+    this codebase — the score is never an opaque number."""
+
+    symbol: str | None = None
+    title: str
+    message: str
+    score: float = Field(ge=0.0, le=100.0)
+    breakdown: dict[str, float] = Field(default_factory=dict)
+    reason: str
+    urgency: str = "normal"  # "low" | "normal" | "high" | "critical"
+    source_event_type: str
+
+
 EVENT_TYPES: dict[str, type[Event]] = {
     cls.__name__: cls
     for cls in (
@@ -320,6 +367,8 @@ EVENT_TYPES: dict[str, type[Event]] = {
         EvidenceProduced,
         EvidenceAggregated,
         MarketContextUpdated,
+        SymbolProfileUpdated,
+        AlertGenerated,
         CommandInvoked,
         CommandFailed,
     )

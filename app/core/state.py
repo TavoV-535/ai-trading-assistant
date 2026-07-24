@@ -12,6 +12,8 @@ from app.db.base import Database
 from app.event_bus.bus import EventBus
 from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
+from app.portfolio.engine import PortfolioIntelligenceEngine
+from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
 from app.strategy.engine import StrategyEngine
 
@@ -30,6 +32,8 @@ class AppState:
     reasoning_engine: ReasoningEngine
     market_data_service: MarketDataService
     context_engine: MarketContextEngine
+    portfolio_engine: PortfolioIntelligenceEngine
+    prioritization_engine: EventPrioritizationEngine
     project_root: Path
     discord_bot: "TradingBot | None" = None
     discord_task: "asyncio.Task[None] | None" = None

@@ -6,10 +6,12 @@ with network access and a real bot token — see docs/DISCORD_BOT_SETUP.md.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from app.discord.bot import TradingBot
+from app.event_bus.events import AlertGenerated
 from app.plugins import PluginRegistry
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,10 +36,10 @@ async def test_bot_registers_help_ping_analyze_and_scan_commands(event_bus, sett
     bot = TradingBot(settings, event_bus, registry)
     registered = bot.register_command_plugins()
 
-    assert sorted(registered) == ["analyze", "ping", "scan"]
+    assert sorted(registered) == ["analyze", "ping", "scan", "watchlist"]
 
     tree_commands = sorted(c.name for c in bot.tree.get_commands())
-    assert tree_commands == ["analyze", "help", "ping", "scan"]
+    assert tree_commands == ["analyze", "help", "ping", "scan", "watchlist"]
 
     await registry.shutdown_all()
 
@@ -331,3 +333,100 @@ async def test_help_callback_lists_registered_commands(event_bus, settings):
     assert call_kwargs.kwargs.get("ephemeral") is True
 
     await registry.shutdown_all()
+
+
+# ---------------------------------------------------------------- proactive alert delivery (Milestone 8)
+
+
+async def test_alert_not_delivered_when_channel_not_configured(event_bus, settings):
+    """discord.alert_channel_id defaults to None -- the alert is still
+    decided upstream (see app/prioritization/engine.py) and logged here,
+    but never sent, and no channel lookup is even attempted."""
+    settings.discord.alert_channel_id = None
+    registry = PluginRegistry(event_bus, settings)
+    bot = TradingBot(settings, event_bus, registry)
+    bot.get_channel = MagicMock(side_effect=AssertionError("should never be called"))
+
+    await event_bus.publish(AlertGenerated(source="test", symbol="NVDA", title="x", message="x", score=80.0, reason="x", source_event_type="StrategyMatched"))
+    await asyncio.sleep(0.05)
+
+    bot.get_channel.assert_not_called()
+
+
+async def test_alert_delivered_to_configured_channel(event_bus, settings):
+    settings.discord.alert_channel_id = "999"
+    registry = PluginRegistry(event_bus, settings)
+    bot = TradingBot(settings, event_bus, registry)
+
+    fake_channel = MagicMock()
+    fake_channel.send = AsyncMock()
+    bot.get_channel = MagicMock(return_value=fake_channel)
+
+    await event_bus.publish(
+        AlertGenerated(
+            source="test", symbol="NVDA", title="Strategy matched: Momentum Breakout",
+            message="NVDA: strategy matched.", score=91.0, reason="scored 91.0", urgency="critical",
+            source_event_type="StrategyMatched",
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    bot.get_channel.assert_called_once_with(999)
+    fake_channel.send.assert_awaited_once()
+    sent_content = fake_channel.send.call_args.args[0]
+    assert "NVDA" in sent_content
+    assert "Momentum Breakout" in sent_content
+    assert "91" in sent_content
+
+
+async def test_alert_delivery_falls_back_to_fetch_channel_when_not_cached(event_bus, settings):
+    settings.discord.alert_channel_id = "999"
+    registry = PluginRegistry(event_bus, settings)
+    bot = TradingBot(settings, event_bus, registry)
+
+    fake_channel = MagicMock()
+    fake_channel.send = AsyncMock()
+    bot.get_channel = MagicMock(return_value=None)
+    bot.fetch_channel = AsyncMock(return_value=fake_channel)
+
+    await event_bus.publish(AlertGenerated(source="test", symbol="NVDA", title="x", message="x", score=80.0, reason="x", source_event_type="StrategyMatched"))
+    await asyncio.sleep(0.05)
+
+    bot.fetch_channel.assert_awaited_once_with(999)
+    fake_channel.send.assert_awaited_once()
+
+
+async def test_alert_delivery_handles_channel_fetch_failure_gracefully(event_bus, settings):
+    settings.discord.alert_channel_id = "999"
+    registry = PluginRegistry(event_bus, settings)
+    bot = TradingBot(settings, event_bus, registry)
+
+    bot.get_channel = MagicMock(return_value=None)
+    bot.fetch_channel = AsyncMock(side_effect=RuntimeError("channel not found"))
+
+    # Must not raise / crash the event bus subscriber.
+    await event_bus.publish(AlertGenerated(source="test", symbol="NVDA", title="x", message="x", score=80.0, reason="x", source_event_type="StrategyMatched"))
+    await asyncio.sleep(0.05)
+
+    bot.fetch_channel.assert_awaited_once()
+
+
+async def test_market_wide_alert_formats_without_a_symbol(event_bus, settings):
+    settings.discord.alert_channel_id = "999"
+    registry = PluginRegistry(event_bus, settings)
+    bot = TradingBot(settings, event_bus, registry)
+
+    fake_channel = MagicMock()
+    fake_channel.send = AsyncMock()
+    bot.get_channel = MagicMock(return_value=fake_channel)
+
+    await event_bus.publish(
+        AlertGenerated(
+            source="test", symbol=None, title="risk_regime: Risk-Off", message="The market: context shifted.",
+            score=75.0, reason="x", source_event_type="MarketContextUpdated",
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    sent_content = fake_channel.send.call_args.args[0]
+    assert "Market-wide" in sent_content

@@ -92,6 +92,15 @@ def create_app(settings: Any | None = None) -> FastAPI:
             ]
         }
 
+    @app.get("/watchlist")
+    async def watchlist() -> dict:
+        state: AppState = app.state.core
+        profiles = state.portfolio_engine.ranked_watchlist()
+        return {
+            "watchlist": list(state.portfolio_engine.watchlist),
+            "ranked": [p.model_dump(mode="json") for p in profiles],
+        }
+
     @app.get("/scanners")
     async def scanners() -> dict:
         state: AppState = app.state.core

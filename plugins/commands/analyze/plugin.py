@@ -43,6 +43,12 @@ Engine (``context.context_engine`` — another instance of the same
 read-only query exception ``evidence_aggregator``/``reasoning_engine``
 already use), and — already present via the Reasoning Engine's own output
 — the context it used to reach its synthesis.
+
+Milestone 8 adds one more, only when the symbol happens to be on the
+configured watchlist: a one-line Portfolio Intelligence Layer snippet
+(``context.portfolio_engine.snapshot(symbol)`` — priority score,
+confidence trend, alert history). A symbol that isn't on the watchlist
+still analyzes exactly as before — this is additive, not a dependency.
 """
 from __future__ import annotations
 
@@ -54,6 +60,7 @@ from app.discord.command_plugin import CommandOption, DiscordCommandPlugin
 from app.discord.dispatch import CommandContext, CommandResponse
 from app.logging import get_logger
 from app.plugins.base import PluginHealth, PluginPermission
+from app.portfolio.models import SymbolProfile
 from app.reasoning.engine import ReasoningOutput
 
 log = get_logger(__name__)
@@ -118,14 +125,21 @@ class AnalyzePlugin(DiscordCommandPlugin):
             # context_type collision -- mirrors ReasoningEngine.context_for().
             context = {**context_engine.snapshot(None), **context_engine.snapshot(symbol)}
 
+        portfolio_engine = self.context.portfolio_engine
+        portfolio_profile = portfolio_engine.snapshot(symbol) if portfolio_engine is not None else None
+
         return CommandResponse(
-            content=_format_analysis(symbol, snapshot, output, context),
+            content=_format_analysis(symbol, snapshot, output, context, portfolio_profile),
             buttons=ACTION_REGISTRY.buttons_for(_ACTIONS, target=symbol),
         )
 
 
 def _format_analysis(
-    symbol: str, snapshot: AggregateSnapshot, output: ReasoningOutput, context: dict[str, str]
+    symbol: str,
+    snapshot: AggregateSnapshot,
+    output: ReasoningOutput,
+    context: dict[str, str],
+    portfolio_profile: "SymbolProfile | None" = None,
 ) -> str:
     lines = [f"**{symbol} analysis** _(source: {output.source})_", "", output.market_summary]
 
@@ -156,5 +170,13 @@ def _format_analysis(
         top = sorted(snapshot.weighted_evidence, key=lambda w: w.weight, reverse=True)[:5]
         weighted_lines = "; ".join(f"{w.evidence.source} ({w.evidence.title}): {w.weight:.2f}" for w in top)
         lines.append(f"Top weighted evidence _(Confidence Weighting Framework)_: {weighted_lines}")
+
+    if portfolio_profile is not None:
+        lines.append("")
+        lines.append(
+            f"**Watchlist priority:** {portfolio_profile.priority_score:.0f}/100 "
+            f"_(trend: {portfolio_profile.confidence_trend})_"
+            + (f" — alerted {portfolio_profile.alert_count} time(s)" if portfolio_profile.alert_count else "")
+        )
 
     return "\n".join(lines)

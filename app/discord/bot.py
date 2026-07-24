@@ -30,6 +30,7 @@ from app.discord.command_plugin import (
 )
 from app.discord.dispatch import CommandButton, CommandContext, CommandResponse, dispatch_command
 from app.event_bus.bus import EventBus
+from app.event_bus.events import AlertGenerated
 from app.logging import get_logger
 from app.plugins.registry import PluginRegistry
 
@@ -85,6 +86,41 @@ class TradingBot(discord.Client):
         self._plugin_registry = plugin_registry
         self._registered_commands: dict[str, DiscordCommandPlugin] = {}
         self._register_help_command()
+        # Proactive alert delivery -- the Event Prioritization Engine's
+        # AlertGenerated is the one event type meant to actually reach the
+        # user unprompted (everything else is command-driven, on demand).
+        # Subscribed here (construction time) rather than in setup_hook so
+        # an alert generated before the gateway connection is fully up is
+        # still queued and delivered as soon as it is, instead of lost.
+        self._event_bus.subscribe(AlertGenerated, self._on_alert_generated, name="discord_bot_alerts")
+
+    # ---------------------------------------------------------------- alerts
+
+    async def _on_alert_generated(self, event: AlertGenerated) -> None:
+        channel_id = self._settings.discord.alert_channel_id
+        if not channel_id:
+            log.info(
+                "alert_not_delivered",
+                detail="discord.alert_channel_id not configured -- alert decided and logged only.",
+                symbol=event.symbol,
+                title=event.title,
+                score=event.score,
+            )
+            return
+
+        channel = self.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(int(channel_id))
+            except Exception:
+                log.exception("alert_channel_fetch_failed", channel_id=channel_id, symbol=event.symbol)
+                return
+
+        try:
+            await channel.send(_format_alert(event))
+            log.info("alert_delivered", channel_id=channel_id, symbol=event.symbol, title=event.title, score=event.score)
+        except Exception:
+            log.exception("alert_delivery_failed", channel_id=channel_id, symbol=event.symbol)
 
     # ---------------------------------------------------------------- setup
 
@@ -209,3 +245,15 @@ class TradingBot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("discord_bot_ready", user=str(self.user))
+
+
+def _format_alert(event: AlertGenerated) -> str:
+    subject = f"**{event.symbol}**" if event.symbol else "**Market-wide**"
+    breakdown_bits = ", ".join(f"{k}={v:.1f}" for k, v in event.breakdown.items() if k != "final_score")
+    lines = [
+        f"{subject} — {event.title} _(score {event.score:.0f}/100, {event.urgency})_",
+        event.message,
+    ]
+    if breakdown_bits:
+        lines.append(f"_Breakdown: {breakdown_bits}_")
+    return "\n".join(lines)

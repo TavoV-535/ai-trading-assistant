@@ -308,8 +308,9 @@ whatever the next event happens to publish. For exactly this case,
 `PluginContext` carries several additional, optional references:
 `context.evidence_aggregator`, `context.reasoning_engine`,
 `context.strategy_engine`, `context.market_data_service`,
-`context.plugin_registry`, `context.context_engine` (all default to
-`None` — handle that gracefully, most unit tests won't supply them).
+`context.plugin_registry`, `context.context_engine`, and
+`context.portfolio_engine` (all default to `None` — handle that
+gracefully, most unit tests won't supply them).
 
 ```python
 async def execute(self, ctx: CommandContext) -> CommandResponse:
@@ -328,6 +329,20 @@ Event Bus" (see `PluginContext`'s docstring in `app/plugins/base.py`) —
 read-only queries only. Never use these to mutate state, publish on
 another system's behalf, or reach into a specific indicator plugin's
 internals.
+
+`context.portfolio_engine` works the same way, for the Portfolio
+Intelligence Layer's continuously-updated watchlist state:
+
+```python
+portfolio_engine = self.context.portfolio_engine
+if portfolio_engine is None:
+    return CommandResponse(content="The watchlist isn't available right now.", ephemeral=True)
+
+profiles = portfolio_engine.ranked_watchlist()  # list[SymbolProfile], highest priority first
+one = portfolio_engine.snapshot("NVDA")         # SymbolProfile | None -- None if not on the watchlist
+```
+
+See `plugins/commands/watchlist/plugin.py` for the full reference usage.
 
 ## 4. Test it without Discord
 

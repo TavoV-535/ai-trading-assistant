@@ -386,6 +386,118 @@ a silent assumption.
   weighted evidence — the same `AnalyzePlugin` the Discord bot runs (see
   `tests/test_milestone7_pipeline_integration.py`).
 
+## Milestone 8 — Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine ✅ complete
+
+- **Portfolio Intelligence Layer** (`app/portfolio/`) — a new core system
+  (not a plugin, the same tier as the Evidence Aggregator / Market Context
+  Engine), continuously monitoring every symbol on `settings.portfolio.watchlist`
+  and maintaining an evolving `SymbolProfile` per symbol: active/bullish/
+  bearish/neutral evidence counts, the Confidence Weighting Framework's
+  `top_weight`/`avg_weight` (reused directly, never recomputed), fundamental
+  (News/Earnings/Macro) evidence freshness, current Market Context Engine
+  labels, a computed `confidence_trend` (rising/falling/stable/unknown,
+  from a rolling weight-history window), matched strategies, and historical
+  alert state (last alert time, count). `app/portfolio/scoring.py::compute_priority()`
+  turns this into a transparent `[0, 100]` `priority_score` + `breakdown`:
+  evidence strength, fundamental freshness, market-context intensity
+  (capped), confidence trend, strategy match, and an alert-suppression
+  *dampening* factor (never a hard zero) for symbols alerted on recently —
+  the watchlist keeps surfacing genuinely important symbols instead of
+  re-spamming the same just-alerted one at the top. Publishes
+  `SymbolProfileUpdated`, edge-triggered on a meaningful (≥0.5) score
+  change. `snapshot(symbol)` / `ranked_watchlist()` are read-only, deep-copy
+  query methods. Only tracks symbols in the configured watchlist — a symbol
+  outside it is never profiled, so "watch a new symbol" is a config change,
+  never a code change. Never imports the Evidence Aggregator, Strategy
+  Engine, Reasoning Engine, or Event Prioritization Engine directly (checked
+  structurally in `tests/test_milestone8_pipeline_integration.py`) — only
+  the Event Bus.
+- **Event Prioritization Engine** (`app/prioritization/`) — another new
+  core system, sitting between the Evidence Aggregator (plus the Strategy
+  Engine and Market Context Engine) and user notifications. Every candidate
+  development — fresh evidence, a strategy match, a context shift — is
+  scored by `app/prioritization/scoring.py::compute_alert_score()`:
+  source-specific importance (a strategy match starts from a high flat
+  base; a context shift's base depends on whether it's inherently
+  high-stakes like Gap Day/Risk-Regime/macro events vs. routine; raw
+  evidence's base scales with the Confidence Weighting Framework's own
+  weight for it), novelty (occurrence-based for evidence; strategy/context
+  candidates are already edge-triggered upstream, so always fully novel),
+  a confidence-trend bonus (reads the Portfolio Intelligence Layer's
+  cached trend for that symbol — rising/falling only, "stable" contributes
+  nothing), a documented urgency proxy, and a flat watchlist-relevance
+  bonus. Only a candidate clearing `prioritization.alert_threshold`
+  *and* not a duplicate within `prioritization.alert_cooldown_seconds`
+  (per `(symbol, alert_key)`) becomes a real `AlertGenerated` event — this
+  is what "reduces notification fatigue while surfacing significant
+  developments promptly" means concretely. Every decision, accepted or
+  suppressed, is recorded with its reason in a bounded, queryable
+  `decision_history(symbol)` — transparency without spamming the bus with
+  every rejected candidate. Reads `settings.portfolio.watchlist` directly
+  at construction (the same static config the Portfolio Intelligence Layer
+  reads) rather than learning membership reactively from
+  `SymbolProfileUpdated` sightings — that would leave a quiet watchlist
+  symbol's very first legitimate alert incorrectly filtered out as "not on
+  watchlist" before it ever got a profile update. No circular dependency
+  with the Portfolio Intelligence Layer: each treats the other's event
+  purely as cache-update input, never as a trigger to republish.
+- **`SymbolProfileUpdated` / `AlertGenerated`** (`app/event_bus/events.py`)
+  — two new events. `AlertGenerated` is the one event type in the whole
+  platform meant to reach the user unprompted; everything else stays
+  command-driven, on demand.
+- **`PluginContext` gains `portfolio_engine`** (`app/plugins/base.py`,
+  `app/plugins/registry.py`) — the same documented, narrow, read-only-query
+  exception introduced in Milestone 5, extended for `/watchlist`'s ranked
+  output and `/analyze`'s portfolio snippet.
+- **`/watchlist`** (`plugins/commands/watchlist/`) — zero-parameter command
+  rendering the Portfolio Intelligence Layer's `ranked_watchlist()`,
+  highest priority first, with each symbol's evidence counts, matched
+  strategies, active context, alert history, and full score breakdown —
+  the proactive counterpart to `/analyze`'s on-demand, single-symbol view.
+  Uses the same Discord Action Registry (Refresh/Dismiss) every other
+  command uses.
+- **`/analyze` updated** — additively shows a one-line **Watchlist
+  priority** snippet (score + confidence trend + alert count) when the
+  analyzed symbol happens to be on the configured watchlist; a symbol off
+  the watchlist, or no `portfolio_engine` at all, degrades to exactly the
+  Milestone 7 behavior.
+- **Proactive Discord alert delivery** (`app/discord/bot.py`) — `TradingBot`
+  subscribes to `AlertGenerated` at construction time (so an alert
+  generated before the gateway connection is fully up is still queued, not
+  lost) and posts a formatted message — symbol, title, score, urgency,
+  transparent breakdown — to `settings.discord.alert_channel_id` (new
+  `DiscordSection` field) if configured. Missing config, an uncached
+  channel (falls back to `fetch_channel`), or a delivery failure are all
+  logged and handled gracefully — the same non-fatal degradation pattern
+  as a missing `DISCORD_BOT_TOKEN` or `ANTHROPIC_API_KEY` — never crashes
+  the bot or the event bus subscriber.
+- **`GET /watchlist`** — mirrors `GET /scanners`/`GET /strategies`: the
+  configured watchlist plus every symbol's ranked profile.
+- `config/default.yaml` gains two new tunable sections, `portfolio`
+  (watchlist, confidence-trend window/margin, notable context types,
+  fundamental-freshness window, alert-suppression window/factor) and
+  `prioritization` (alert threshold, cooldown, watchlist-only toggle,
+  decision-log size), plus `discord.alert_channel_id`.
+- 63 new tests (13 Portfolio scoring math, 16 Portfolio engine, 10
+  Prioritization scoring math, 15 Prioritization engine, 3 `/watchlist`
+  command, 5 Discord proactive-alert-delivery, 3 `/analyze` portfolio-
+  snippet integration, 3 full Milestone 8 pipeline integration incl. two
+  architectural import-guardrail tests) plus existing tests updated for
+  the new registered command (`/watchlist` alongside `/analyze`, `/scan`,
+  `/ping`, `/help`); 325 tests passing total, ~96% coverage of `app/`
+  (improved from Milestone 7's ~95%), ruff clean.
+- Live-verified end to end: real indicator plugins driving a real
+  "Momentum Breakout" `StrategyMatched` and a real "Bull Trend"
+  `MarketContextUpdated` for one watchlisted symbol while a second
+  watchlisted symbol stays quiet — the Portfolio Intelligence Layer
+  produces a real non-zero, ranked-first priority score for the active
+  symbol and a real (still-tracked, not dropped) zero score for the quiet
+  one; the Event Prioritization Engine independently turns the same
+  strategy match into a real, scored, threshold-clearing `AlertGenerated`;
+  `/watchlist` and `/analyze` both reflect it — all through the real Event
+  Bus, no direct calls between the two new engines (see
+  `tests/test_milestone8_pipeline_integration.py`).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
@@ -399,16 +511,17 @@ open to reordering based on what you want to see working first:
    blocker for anything else. A real News/Earnings/Macro provider (a real
    API instead of the synthetic reference plugins) is the same story for
    `settings.intelligence`-driven plugins.
-2. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
-   Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
-   **Personal Statistics** — roughly in that order, since each leans on the
-   ones before it (backtesting needs strategies + indicators; the coach
-   needs journaling; risk warnings need trade events already flowing).
-   These are also what would give the Action Registry's Chart / News /
-   History / Backtest / Journal / Watch / Replay / Coach actions real
-   behavior instead of a placeholder reply — each is a single
-   `ACTION_REGISTRY.register_handler()` call once the backing system
-   exists.
+2. **Backtesting**, then **Journaling**, **Risk Engine**, **AI Coach**,
+   **Replay Mode**, **Optimization Engine**, **Personal Statistics** —
+   roughly in that order, since each leans on the ones before it
+   (backtesting needs strategies + indicators; the coach needs journaling;
+   risk warnings need trade events already flowing). These are also what
+   would give the Action Registry's Chart / News / History / Backtest /
+   Journal / Watch / Replay / Coach actions real behavior instead of a
+   placeholder reply — each is a single `ACTION_REGISTRY.register_handler()`
+   call once the backing system exists. (`Watch` already has a real system
+   behind it as of Milestone 8 — `/watchlist` — though the button itself
+   still needs its handler wired up.)
 3. **More External Intelligence Platform sources** — SEC filings, insider
    activity, FDA approvals, M&A, buybacks, dividends, stock splits — each
    is a new folder under `plugins/intelligence/` against the same

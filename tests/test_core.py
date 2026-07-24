@@ -48,3 +48,17 @@ def test_plugins_endpoint_lists_ema_and_ping(settings):
         assert "Ping" in body["loaded"]
         assert body["loaded"]["Ping"]["category"] == "commands"
         assert body["failed"] == {}
+
+
+def test_watchlist_endpoint_reports_configured_symbols(settings):
+    settings.portfolio.watchlist = ["NVDA", "AAPL"]
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/watchlist")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["watchlist"] == ["NVDA", "AAPL"]
+        assert {p["symbol"] for p in body["ranked"]} == {"NVDA", "AAPL"}
+        # Untouched watchlist symbols still report a (zero) priority score,
+        # not an error -- continuous monitoring, not "only if active."
+        assert all(p["priority_score"] == 0.0 for p in body["ranked"])

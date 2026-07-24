@@ -81,6 +81,12 @@ class ApiSection(BaseModel):
 
 class DiscordSection(BaseModel):
     command_prefix: str = "/"
+    #: Channel ID the bot proactively posts AlertGenerated events to (see
+    #: app/discord/bot.py). None (default) means alerts are still decided
+    #: and logged but never actually posted -- the same graceful-
+    #: degradation pattern as a missing DISCORD_BOT_TOKEN or
+    #: ANTHROPIC_API_KEY, not a crash.
+    alert_channel_id: str | None = None
 
 
 class MarketDataSection(BaseModel):
@@ -127,6 +133,56 @@ class ContextSection(BaseModel):
     low_liquidity_volume_ratio: float = 0.4
     risk_regime_min_symbols: int = 2
     risk_regime_majority_ratio: float = 0.6
+
+
+class PortfolioSection(BaseModel):
+    """Tunable inputs for the Portfolio Intelligence Layer
+    (``app/portfolio/``). ``watchlist`` is the configured set of symbols
+    continuously monitored/profiled — the engine never tracks a symbol
+    outside this list, so "watching a new symbol" is a config change, not
+    a code change."""
+
+    watchlist: list[str] = Field(default_factory=lambda: ["NVDA", "AAPL", "TSLA"])
+    #: How many recent (weight, timestamp) samples are kept per symbol to
+    #: derive confidence_trend.
+    confidence_trend_window: int = 8
+    #: Minimum change in average weight (recent half vs. older half of the
+    #: window) before a trend is called "rising"/"falling" rather than
+    #: "stable".
+    confidence_trend_margin: float = 0.05
+    #: Market Context Engine context_types considered "notable" for
+    #: priority scoring (see app/portfolio/scoring.py).
+    notable_context_types: list[str] = Field(
+        default_factory=lambda: ["trend", "volatility", "gap", "exhaustion", "risk_regime", "macro_event"]
+    )
+    #: How recently a piece of fundamental (News/Earnings/Macro) evidence
+    #: must have arrived to count as "fresh" in priority scoring.
+    fundamental_freshness_seconds: float = 600.0
+    #: A symbol alerted on within this window has its priority score
+    #: dampened (not zeroed) so the watchlist doesn't keep re-surfacing
+    #: the same already-alerted development at the top.
+    alert_suppression_seconds: float = 300.0
+    alert_suppression_factor: float = 0.5
+
+
+class PrioritizationSection(BaseModel):
+    """Tunable inputs for the Event Prioritization Engine
+    (``app/prioritization/``)."""
+
+    #: A candidate must score at least this high (0-100) to become a real
+    #: AlertGenerated event.
+    alert_threshold: float = 60.0
+    #: Minimum time between two alerts sharing the same (symbol, alert_key)
+    #: — the duplicate-suppression window.
+    alert_cooldown_seconds: float = 300.0
+    #: When true (default), only symbols on the Portfolio Intelligence
+    #: Layer's configured watchlist are eligible for alerts at all — a
+    #: symbol outside it never reaches the scoring step. Set false to let
+    #: any symbol with data generate alerts, scored the same way.
+    watchlist_only: bool = True
+    #: How many recent decisions (accepted or suppressed) are retained per
+    #: symbol for transparency/introspection (``decision_history()``).
+    decision_log_size: int = 20
 
 
 class ConfidenceWeightingSection(BaseModel):
@@ -183,6 +239,8 @@ class Settings(BaseSettings):
     intelligence: IntelligenceSection = Field(default_factory=IntelligenceSection)
     context: ContextSection = Field(default_factory=ContextSection)
     confidence_weighting: ConfidenceWeightingSection = Field(default_factory=ConfidenceWeightingSection)
+    portfolio: PortfolioSection = Field(default_factory=PortfolioSection)
+    prioritization: PrioritizationSection = Field(default_factory=PrioritizationSection)
 
     @classmethod
     def settings_customise_sources(

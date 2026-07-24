@@ -1,6 +1,7 @@
 from app.event_bus.bus import EventBus, Subscription
 from app.event_bus.events import (
     EVENT_TYPES,
+    AlertGenerated,
     BacktestFinished,
     CommandFailed,
     CommandInvoked,
@@ -19,6 +20,7 @@ from app.event_bus.events import (
     PriceMoved,
     RiskWarning,
     StrategyMatched,
+    SymbolProfileUpdated,
     TradeClosed,
     TradeOpened,
     WatchlistTriggered,
@@ -49,6 +51,8 @@ __all__ = [
     "EvidenceAggregated",
     "WeightedEvidenceEvent",
     "MarketContextUpdated",
+    "SymbolProfileUpdated",
+    "AlertGenerated",
     "CommandInvoked",
     "CommandFailed",
 ]

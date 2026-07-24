@@ -10,11 +10,12 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-7 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-8 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
 `/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
-+ Discord Action Registry, and the External Intelligence Platform +
-Market Context Engine + Confidence Weighting Framework.**
++ Discord Action Registry, the External Intelligence Platform +
+Market Context Engine + Confidence Weighting Framework, and the
+Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -47,8 +48,16 @@ intelligence data; and a Confidence Weighting Framework computes a
 transparent, normalized weight for every piece of evidence — freshness,
 persistence, source reliability, market regime, cross-confirmation,
 contradiction, and more — without ever hiding or replacing the original
-evidence (Milestone 7). See [`docs/MILESTONES.md`](./docs/MILESTONES.md)
-for what's done and what's next.
+evidence (Milestone 7); and now the platform is proactive, not just
+reactive — a Portfolio Intelligence Layer continuously profiles every
+configured watchlist symbol and ranks them by a transparent priority score
+(`/watchlist`), while an independent Event Prioritization Engine scores
+every candidate development for importance, novelty, confidence change,
+urgency, and user relevance before deciding whether it's worth a real,
+duplicate-suppressed Discord alert — reducing notification fatigue without
+missing what actually matters (Milestone 8). See
+[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
+next.
 
 ## Quick start (Docker — recommended)
 
@@ -72,20 +81,28 @@ curl http://localhost:8000/health   # includes "discord": "connected" | "connect
 curl http://localhost:8000/plugins
 curl http://localhost:8000/strategies
 curl http://localhost:8000/scanners
+curl http://localhost:8000/watchlist
 ```
 
 In Discord, try `/ping`, `/help`, `/scan` (what the Scanner Engine is
-currently watching), and `/analyze SYMBOL` — the reference scanner watches
-NVDA/AAPL/TSLA against the bundled synthetic-random-walk data provider by
-default, so `/analyze NVDA` should show real, continuously-generated
-evidence within a few seconds of the app starting. Any other symbol
-reports `insufficient_evidence` until a scanner is configured to watch it.
-Note: the reference News/Earnings/Macro intelligence plugins and the
-reference scanner are enabled by default in a real deployment (only
-disabled in the test suite) — give it a minute or two and `/analyze
-NVDA`'s response will also show a **Market context** line and weighted
-evidence from the Confidence Weighting Framework, not just raw technical
-evidence.
+currently watching), `/analyze SYMBOL`, and `/watchlist` (the Portfolio
+Intelligence Layer's ranked, prioritized view of every configured symbol)
+— the reference scanner watches NVDA/AAPL/TSLA against the bundled
+synthetic-random-walk data provider by default (the same three symbols
+`portfolio.watchlist` tracks out of the box), so `/analyze NVDA` and
+`/watchlist` should both show real, continuously-generated evidence within
+a few seconds of the app starting. Any other symbol reports
+`insufficient_evidence` until a scanner is configured to watch it, and
+`/watchlist` only ever tracks symbols listed in `portfolio.watchlist`
+(`config/default.yaml`). Note: the reference News/Earnings/Macro
+intelligence plugins and the reference scanner are enabled by default in a
+real deployment (only disabled in the test suite) — give it a minute or
+two and `/analyze NVDA`'s response will also show a **Market context**
+line, weighted evidence from the Confidence Weighting Framework, and (once
+its priority score moves enough to matter) a **Watchlist priority** line.
+Set `discord.alert_channel_id` in `config/default.yaml` (or override via
+settings) to have the Event Prioritization Engine post real alerts to a
+channel as they're generated, instead of only logging its decisions.
 
 Stop everything with `./scripts/stop.sh`.
 
@@ -116,7 +133,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-262 tests, ~95% coverage of `app/` as of Milestone 7. Live Discord gateway
+325 tests, ~96% coverage of `app/` as of Milestone 8. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -133,7 +150,7 @@ app/
   discord/      # TradingBot + DiscordCommandPlugin contract + command dispatch + Action Registry
   reasoning/    # Reasoning Engine + Claude provider
   db/           # SQLAlchemy models, Repository pattern, event persistence
-  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies, /scanners)
+  core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies, /scanners, /watchlist)
   indicators/   # shared calculation library every indicator plugin uses (not a plugin itself)
   aggregation/  # Evidence Aggregator + Confidence Weighting Framework (not a plugin itself)
   strategy/     # Strategy Engine — compiles declarative YAML into a rule graph (not a plugin itself)
@@ -141,10 +158,12 @@ app/
   scanner/      # Scanner Plugin base — the continuous tick loop every scanner plugin shares
   intelligence/ # IntelligencePlugin base — the shared External Intelligence Platform contract
   context/      # Market Context Engine — derives Bull/Bear Trend, volatility, Risk-On/Off, ... (not a plugin itself)
+  portfolio/    # Portfolio Intelligence Layer — per-symbol profiles + ranked priority scoring (not a plugin itself)
+  prioritization/ # Event Prioritization Engine — scores/gates candidate developments into real alerts (not a plugin itself)
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
-  commands/     # ping/, analyze/, scan/
+  commands/     # ping/, analyze/, scan/, watchlist/
   market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
   scanners/     # core/ (reference watchlist scanner)
   intelligence/ # news/, earnings/, macro/ (External Intelligence Platform reference plugins)
