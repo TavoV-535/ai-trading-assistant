@@ -45,6 +45,30 @@ Live Provider / Replay Engine / Historical DB / Paper Feed  (each a plugin)
 A scanner never imports a provider, and a provider never imports a
 scanner — see "Market Data Abstraction Layer" and "Scanner Engine" below.
 
+As of Milestone 7, evidence has two more independent tributaries feeding
+the same Evidence Aggregator, plus a parallel stream that shapes how
+that evidence is weighted rather than adding to its count:
+
+```
+Market Data ──────────────────────────────┐
+Scanner Engine → Indicator Plugins ────────┤
+External Intelligence Platform ────────────┼──→ Evidence Aggregator
+  (News / Earnings / Macro / future        │      → Confidence Weighting Framework
+   sources — plugins/intelligence/)        │      → EvidenceAggregated
+                                            │           → Strategy Engine
+Market Data + Intelligence ──→ Market      │           → Reasoning Engine
+  Context Engine → MarketContextUpdated ───┘                → /analyze SYMBOL
+```
+
+`External Intelligence Platform` plugins publish `EvidenceProduced` the
+exact same way an indicator plugin does — the Evidence Aggregator can't
+tell the two apart, by design (see "External Intelligence Platform"
+below). The `Market Context Engine` is the odd one out: it never adds to
+`active_evidence` itself. Its `MarketContextUpdated` events feed the
+Confidence Weighting Framework's "market regime" factor and the
+Reasoning Engine's synthesis — context *shapes* how evidence is read, it
+isn't evidence itself (see "Market Context Engine" below).
+
 ## Event Bus (`app/event_bus/`)
 
 `EventBus` is an async pub/sub broker. Every subscriber gets its own bounded
@@ -63,12 +87,15 @@ under load.
 
 Events (`app/event_bus/events.py`) are immutable Pydantic models —
 `MarketDataUpdated`, `PriceMoved`, `IndicatorCalculated`, `NewsReceived`,
-`EarningsReleased`, `TradeOpened`, `TradeClosed`, `PositionUpdated`,
-`WatchlistTriggered`, `StrategyMatched`, `BacktestFinished`,
-`JournalCreated`, `DailySummary`, `RiskWarning`, plus `EvidenceProduced`
-(wraps an `Evidence` object — see below). Every event carries `event_id`,
-`timestamp`, `source`, and an optional `correlation_id` for tracing a chain
-of related events (e.g. a trade's full lifecycle).
+`EarningsReleased`, `MacroEventOccurred`, `TradeOpened`, `TradeClosed`,
+`PositionUpdated`, `WatchlistTriggered`, `StrategyMatched`,
+`BacktestFinished`, `JournalCreated`, `DailySummary`, `RiskWarning`, plus
+`EvidenceProduced` (wraps an `Evidence` object — see below),
+`EvidenceAggregated` (carries `weighted_evidence`, the Confidence
+Weighting Framework's output — see below), and `MarketContextUpdated`
+(the Market Context Engine's output — see below). Every event carries
+`event_id`, `timestamp`, `source`, and an optional `correlation_id` for
+tracing a chain of related events (e.g. a trade's full lifecycle).
 
 ## Universal Plugin Contract (`app/plugins/`)
 
@@ -88,19 +115,20 @@ from an optional `config.yaml` next to `plugin.py`). That's the entire
 surface a plugin needs — it never reaches into core modules directly.
 
 `PluginContext` also carries `reasoning_engine`, `evidence_aggregator`,
-`strategy_engine`, `market_data_service`, and `plugin_registry` — all
-default to `None`, and all exist for exactly one narrow, documented
-reason: a plugin sometimes needs to answer an on-demand, synchronous,
-read-only query instead of only reacting to events (`/analyze NVDA` needs
-whatever the *current* evidence/reasoning state is right now; a scanner
-plugin needs the *current* bar from the Market Data Abstraction Layer on
-every tick — it's the thing that starts the event chain, not something
-reacting to one; `/scan`'s status report needs to see what's currently
-loaded). A plugin may read from these; it may never use them to mutate
-state, publish on another system's behalf, or reach into a specific
-indicator plugin's internals — the Event Bus remains the only way to make
-something happen. See `PluginContext`'s docstring in `app/plugins/base.py`
-and the "Discord" and "Scanner Engine" sections below.
+`strategy_engine`, `market_data_service`, `plugin_registry`, and (as of
+Milestone 7) `context_engine` — all default to `None`, and all exist for
+exactly one narrow, documented reason: a plugin sometimes needs to answer
+an on-demand, synchronous, read-only query instead of only reacting to
+events (`/analyze NVDA` needs whatever the *current* evidence/reasoning/
+context state is right now; a scanner plugin needs the *current* bar from
+the Market Data Abstraction Layer on every tick — it's the thing that
+starts the event chain, not something reacting to one; `/scan`'s status
+report needs to see what's currently loaded). A plugin may read from
+these; it may never use them to mutate state, publish on another
+system's behalf, or reach into a specific indicator plugin's internals —
+the Event Bus remains the only way to make something happen. See
+`PluginContext`'s docstring in `app/plugins/base.py` and the "Discord",
+"Scanner Engine", and "Market Context Engine" sections below.
 
 **Discovery** (`app/plugins/loader.py`) walks every directory listed in
 `config.plugins.search_paths`, imports each `<plugin-folder>/plugin.py`,
@@ -234,12 +262,92 @@ which would otherwise spam fresh evidence on every single tick a symbol
 spends in an extreme state. See `docs/PLUGIN_GUIDE.md` for how to add
 another one.
 
+## External Intelligence Platform (`app/intelligence/`, `plugins/intelligence/`)
+
+PROJECT.md's Milestone 7 spec is explicit: **no separate isolated News,
+Earnings, Macro, SEC Filings, Insider Activity, or Economic Calendar
+engines.** Every non-price source of market information is just another
+plugin producing the same two things every evidence producer in this
+codebase produces — a normalized **Intelligence Event** (a typed fact:
+`NewsReceived`, `EarningsReleased`, `MacroEventOccurred`, ...) and a
+normalized **Evidence Object**, published exactly like an indicator
+plugin's. The Evidence Aggregator doesn't know or care whether a piece of
+evidence came from an RSI cross or a positive earnings surprise.
+
+`IntelligencePlugin` (`app/intelligence/plugin.py`) is the one shared
+piece of infrastructure: a config-driven polling loop (`interval_seconds`,
+mirroring `ScannerPlugin`'s tick loop — most real intelligence sources are
+polled on an interval in practice) and a `_publish(event, evidence)`
+helper that keeps the pair from drifting out of sync. A concrete plugin
+overrides one method, `poll_once()`.
+
+**Reference plugins** (`plugins/intelligence/news/`, `earnings/`, `macro/`)
+— three independent examples, each its own file, sharing only the base
+contract. Like `ReplayProviderPlugin` (Milestone 6), none of them call a
+real external API (no network access is assumed available in this
+sandbox): they generate plausible, clearly-labeled synthetic data
+(`provider: "synthetic-news-feed"`, etc.), deterministically seeded per
+symbol so output is reproducible. Swapping in a real provider (a news
+API, an earnings calendar service, an economic-release feed) is a new
+plugin against the exact same contract — zero changes anywhere else.
+Adding a *new* source category (SEC filings, insider transactions, FDA
+approvals, buybacks, ...) is the same: a new folder under
+`plugins/intelligence/`, not a new subsystem.
+
+The Macro plugin also demonstrates the convention the Market Context
+Engine reads to promote raw intelligence into higher-level context: any
+evidence whose `metadata` carries a `context_hint` key (e.g.
+`"fed_week"`, `"cpi_day"`, `"earnings_season"`) becomes a
+`MarketContextUpdated` event without the Context Engine needing to know
+anything about which plugin published it.
+
+## Market Context Engine (`app/context/`)
+
+The rest of the platform reasons about individual pieces of evidence
+("Bullish EMA Cross"). This engine reasons about the *environment* those
+pieces of evidence are appearing in — Bull/Bear Trend, Sideways Market,
+High/Low Volatility, Gap Day, Trend Exhaustion, Low Liquidity, market-wide
+Risk-On/Risk-Off, and calendar/macro context (Fed Week, CPI Day, Earnings
+Season, ...). Every derivation is a real, computed signal, not a
+hardcoded label:
+
+- **Trend, volatility, gap, exhaustion, liquidity** — computed per symbol
+  from a bounded rolling window of `MarketDataUpdated` closes/volumes the
+  engine keeps itself (it never calls the Scanner Engine or an indicator
+  plugin). Trend is a % change over `context.trend_window` bars against
+  configurable thresholds; volatility is the standard deviation of
+  bar-over-bar returns; a gap is a single large jump between consecutive
+  updates; exhaustion is a decelerating second half of the trend window
+  relative to the first; liquidity compares the latest volume against the
+  trailing average.
+- **Market-wide Risk-On/Risk-Off** — a genuine cross-symbol aggregate:
+  once enough symbols are tracked, a majority in Bull Trend publishes
+  Risk-On, a majority in Bear Trend publishes Risk-Off.
+- **Macro/calendar context** — promoted from intelligence evidence
+  carrying `metadata["context_hint"]` (see "External Intelligence
+  Platform" above) — a generic mechanism, not hardcoded per source.
+
+Every label lives at a `(symbol, context_type)` key, `symbol=None` for
+market-wide context. Publishing is **edge-triggered** — a
+`MarketContextUpdated` event fires only when a label actually changes,
+same "don't spam the bus" discipline as `StrategyMatched` and the Scanner
+Engine. `MarketContextEngine.snapshot(symbol)` answers the same question
+on demand, the same pattern `EvidenceAggregator.snapshot()` and
+`ReasoningEngine.evidence_for()` already use.
+
+The engine never calls the Evidence Aggregator, Strategy Engine, or
+Reasoning Engine directly — only `MarketContextUpdated` leaves this
+module, and only through the Event Bus (checked structurally in
+`tests/test_milestone7_pipeline_integration.py`, the same guarantee the
+Strategy and Scanner Engines already have).
+
 ## Evidence Aggregator (`app/aggregation/`)
 
-Sits between every evidence producer (14 indicator plugins today; news,
-earnings, macro, options flow, and scanners later) and everything that
-consumes evidence. It is the single interface both the Strategy Engine and
-the Reasoning Engine subscribe to — neither one ever subscribes to raw
+Sits between every evidence producer (14 indicator plugins + the
+News/Earnings/Macro intelligence plugins today; more External
+Intelligence Platform sources later) and everything that consumes
+evidence. It is the single interface both the Strategy Engine and the
+Reasoning Engine subscribe to — neither one ever subscribes to raw
 `EvidenceProduced` directly. Its job is explicitly **not** to suppress or
 discard market information; every `EvidenceProduced` event it ever receives
 is retained in a bounded per-symbol history (`EvidenceAggregator.history()`).
@@ -257,12 +365,45 @@ What it adds on top of the raw stream:
 - **Conflict detection** — if the currently-fresh evidence for a symbol
   contains both bullish and bearish directions, the snapshot is flagged
   `has_conflict=True` rather than silently averaging them away.
+- **Confidence weighting** (Milestone 7) — every active piece of evidence
+  also gets a normalized `[0, 1]` weight from the Confidence Weighting
+  Framework (below), computed alongside — never instead of — the raw,
+  unweighted evidence.
 
 Every incoming `EvidenceProduced` results in exactly one `EvidenceAggregated`
-event, carrying the original evidence, its enrichment metadata, and the
-resulting deduped/fresh snapshot (`active_evidence`) for that symbol.
+event, carrying the original evidence, its enrichment metadata, the
+resulting deduped/fresh snapshot (`active_evidence`) for that symbol, and
+its confidence-weighted counterpart (`weighted_evidence`).
 `EvidenceAggregator.snapshot(symbol)` computes the same thing on demand,
 without waiting for the next event.
+
+## Confidence Weighting Framework (`app/aggregation/weighting.py`)
+
+Extends the Evidence Aggregator from "how many pieces of evidence exist"
+to "how much should each piece actually count." `compute_weight()`
+produces a normalized `[0, 1]` weight plus a fully transparent
+`breakdown` dict for every active piece of evidence, considering:
+
+| Factor | What it reads |
+| --- | --- |
+| Source / historical reliability | `confidence_weighting.source_reliability` config (per-source multiplier; also stands in for historical reliability until a real trade-outcome history exists) |
+| Freshness | The aggregator's own `EnrichmentInfo.freshness` |
+| Persistence | `EnrichmentInfo.occurrence_count`, diminishing returns |
+| Timeframe alignment | How many other active peers share this evidence's timeframe |
+| Cross-indicator confirmation | How many other active peers agree in direction |
+| Contradictory evidence | A penalty when active peers take the opposite directional stance |
+| Market regime | Whether this evidence's direction agrees with the Market Context Engine's current trend label for the symbol |
+| Correlation between sources | A documented proxy — 1/√n dampening for evidence sharing a category — *not* real statistical correlation |
+| Future ML adjustments | An explicit no-op seam (`ml_adjustment`, always `1.0` today) |
+
+Every factor multiplies around a neutral baseline; the product is clamped
+to `[0, 1]`. **The original Evidence objects are never modified, replaced,
+or discarded** — `weighted_evidence` is always a parallel, explainable
+annotation alongside `active_evidence`, matching PROJECT.md's explicit
+requirement that the framework "enhance reasoning, never replace the
+underlying evidence." The Evidence Aggregator subscribes to
+`MarketContextUpdated` purely as a weighting input (the "market regime"
+factor) — it's never added to `active_evidence` itself.
 
 ## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
 
@@ -311,17 +452,32 @@ commands — a real, working example new strategies can be modeled on. See
 ## Reasoning Engine (`app/reasoning/`)
 
 Subscribes to `EvidenceAggregated` (never raw `EvidenceProduced` — see
-Evidence Aggregator above) and `StrategyMatched`. On every
-`EvidenceAggregated` update it replaces its per-symbol evidence view with
-the aggregator's current deduped/fresh `active_evidence` — freshness/decay
-is the aggregator's job, so this engine always reasons over exactly
-"what's true right now," not an ever-growing pile of stale history. On
-`analyze(symbol)` it synthesizes everything currently gathered (plus any
-declaratively-matched strategies) into a `ReasoningOutput`: market summary,
-trade thesis (framed as a hypothesis, never a directive), risk assessment,
-alternative scenario, confidence, suggested strategy archetypes (populated
-from real `StrategyMatched` events when there are any), historical
-similarity.
+Evidence Aggregator above), `StrategyMatched`, and (Milestone 7)
+`MarketContextUpdated`. On every `EvidenceAggregated` update it replaces
+its per-symbol evidence view with the aggregator's current deduped/fresh
+`active_evidence` *and* the Confidence Weighting Framework's
+`weighted_evidence` — freshness/decay/weighting is the aggregator's job,
+so this engine always reasons over exactly "what's true right now, and
+how much it should count," not an ever-growing pile of stale, unweighted
+history. On `analyze(symbol)` it synthesizes everything currently
+gathered (evidence, declaratively-matched strategies, and current market
+context — both symbol-specific and market-wide) into a `ReasoningOutput`:
+market summary, trade thesis (framed as a hypothesis, never a directive),
+risk assessment, alternative scenario, confidence, suggested strategy
+archetypes (populated from real `StrategyMatched` events when there are
+any), historical similarity, and the context labels actually used
+(`ReasoningOutput.context`).
+
+In AI mode, each evidence item sent to the model carries its
+`confidence_weight` alongside the plugin's own `confidence`, and the
+current market context is appended to the prompt as its own section — the
+model reasons with weighting and regime information, not just a flat list
+of evidence. In evidence-only mode, when weighted evidence is available
+the bullish/bearish lean and the reported confidence are computed from
+weighted mass (`Σ weight` per direction) rather than raw counts, so a
+handful of highly-weighted, regime-aligned signals can outweigh a larger
+pile of low-weight noise — and the summary text names the current context
+labels directly.
 
 Three states, always explained rather than silent:
 
@@ -429,15 +585,20 @@ automatically, with zero command-plugin changes.
 
 **Reference plugins:** `plugins/commands/analyze/` (`/analyze SYMBOL`) —
 one required `symbol` option, seven actions (Chart / News / History /
-Backtest / Journal / Watch / Dismiss). Reads `context.evidence_aggregator`
-and `context.reasoning_engine` directly (the documented `PluginContext`
-exception above) to answer the query synchronously, and gracefully
-reports "insufficient evidence" for any symbol nothing has published
-`MarketDataUpdated` for yet. `plugins/commands/scan/` (`/scan`) — zero
-parameters, reports what the Scanner Engine is currently watching via
-`context.plugin_registry`, using the same Action Registry (Refresh /
-Dismiss) — proof the registry is genuinely reusable across commands, not
-`/analyze`-specific.
+Backtest / Journal / Watch / Dismiss). Reads `context.evidence_aggregator`,
+`context.reasoning_engine`, and (Milestone 7) `context.context_engine`
+directly (the documented `PluginContext` exception above) to answer the
+query synchronously, and gracefully reports "insufficient evidence" for
+any symbol nothing has published `MarketDataUpdated` for yet. Its
+rendered output demonstrates all four Milestone 7 dimensions at once:
+technical + fundamental evidence counts, a **Market context** line built
+from `context_engine.snapshot()` (market-wide context first, symbol-
+specific winning on any collision), and the top confidence-weighted
+evidence from `snapshot.weighted_evidence`. `plugins/commands/scan/`
+(`/scan`) — zero parameters, reports what the Scanner Engine is currently
+watching via `context.plugin_registry`, using the same Action Registry
+(Refresh / Dismiss) — proof the registry is genuinely reusable across
+commands, not `/analyze`-specific.
 
 **What can and can't be verified without a live Discord connection:** the
 whole pipeline up to and including "does this Interaction produce the right
@@ -450,9 +611,12 @@ real `DISCORD_BOT_TOKEN` set. See `docs/DISCORD_BOT_SETUP.md`.
 ## Core / lifecycle (`app/core/`)
 
 `bootstrap()` brings systems up in dependency order (logging → event bus →
-database → Evidence Aggregator → Strategy Engine → Reasoning Engine →
-plugin registry) and `teardown()` reverses it. Plugin loading is
-deliberately two phases, not one:
+database → Market Context Engine → Evidence Aggregator → Strategy Engine
+→ Reasoning Engine → plugin registry) and `teardown()` reverses it. The
+Context Engine is wired before the Aggregator only so bootstrap reads
+top-to-bottom the same way data actually flows — both attach purely via
+event-bus subscriptions, so the order doesn't functionally matter. Plugin
+loading is deliberately two phases, not one:
 
 1. **Phase 1** — `plugin_registry.load_all(root, search_paths=["plugins/market_data"])`
    loads only market data provider plugins. `MarketDataService` is then

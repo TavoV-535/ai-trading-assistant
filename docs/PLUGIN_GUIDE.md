@@ -308,8 +308,8 @@ whatever the next event happens to publish. For exactly this case,
 `PluginContext` carries several additional, optional references:
 `context.evidence_aggregator`, `context.reasoning_engine`,
 `context.strategy_engine`, `context.market_data_service`,
-`context.plugin_registry` (all default to `None` — handle that gracefully,
-most unit tests won't supply them).
+`context.plugin_registry`, `context.context_engine` (all default to
+`None` — handle that gracefully, most unit tests won't supply them).
 
 ```python
 async def execute(self, ctx: CommandContext) -> CommandResponse:
@@ -608,3 +608,136 @@ default in the test suite's `settings` fixture (`tests/conftest.py`) so
 the ~150+ other tests that load the full plugin registry don't each spin
 up an unwanted long-running background task. Tests that want the real
 reference scanner enabled restore `settings.plugins.disabled` themselves.
+
+---
+
+# Writing an External Intelligence Platform plugin
+
+PROJECT.md's Milestone 7 spec is explicit: don't build a separate News
+engine, a separate Earnings engine, a separate Macro engine. Every
+non-price source of market information — news, earnings, SEC filings,
+insider activity, FDA approvals, M&A, buybacks, dividends, stock splits,
+economic releases, treasury auctions, Fed speeches, a future economic
+calendar, anything — is a plugin under `plugins/intelligence/`,
+implementing the exact same contract. The Evidence Aggregator can't tell
+one from an indicator plugin, by design.
+
+## 1. Almost always, just one method: `poll_once()`
+
+The base class, `IntelligencePlugin` (`app/intelligence/plugin.py`),
+already implements the entire Universal Plugin Contract generically plus
+a config-driven polling loop (mirroring `ScannerPlugin`'s tick loop) — a
+concrete plugin overrides `poll_once()` and calls `self._publish(...)`
+for each new item it finds:
+
+```python
+# plugins/intelligence/sec_filings/plugin.py
+from typing import Any
+
+from app.event_bus.events import Event
+from app.evidence.schema import Evidence, EvidenceCategory
+from app.intelligence.plugin import IntelligencePlugin
+
+
+class SecFilingReceived(Event):
+    symbol: str
+    filing_type: str  # "10-K", "10-Q", "8-K", "Form 4", ...
+    url: str | None = None
+
+
+class SecFilingsPlugin(IntelligencePlugin):
+    """Polls for new SEC filings against the configured watchlist."""
+
+    name = "SECFilings"
+    version = "0.1.0"
+
+    def __init__(self, context: Any) -> None:
+        super().__init__(context)
+        self.watchlist: tuple[str, ...] = tuple(context.plugin_config.get("watchlist") or [])
+
+    async def poll_once(self) -> None:
+        for symbol in self.watchlist:
+            filing = await self._check_for_new_filing(symbol)  # your integration
+            if filing is None:
+                continue
+            intelligence_event = SecFilingReceived(source=self.name, symbol=symbol, filing_type=filing.type, url=filing.url)
+            evidence = Evidence(
+                source=self.name,
+                category=EvidenceCategory.NEWS,
+                title=f"{symbol} filed a {filing.type}",
+                score=15,
+                confidence=75,
+                direction="neutral",
+                symbol=symbol,
+                metadata={"filing_type": filing.type},
+            )
+            await self._publish(intelligence_event, evidence)
+```
+
+```yaml
+# plugins/intelligence/sec_filings/config.yaml
+watchlist: ["NVDA", "AAPL"]
+interval_seconds: 300
+```
+
+That's the whole integration — no new subsystem, no core code touched.
+Reusing an existing Intelligence Event schema (`NewsReceived`,
+`EarningsReleased`, `MacroEventOccurred`) instead of defining a new one is
+fine when your source's shape genuinely matches one; define a new `Event`
+subclass (as above) when it doesn't.
+
+## 2. Feeding the Market Context Engine (optional)
+
+If your source is calendar/macro-flavored (a Fed meeting, a CPI release,
+an earnings-season cluster, a market holiday), tag the evidence's
+`metadata` with a `context_hint` key. The Market Context Engine
+(`app/context/engine.py`) promotes any evidence carrying it into a
+`MarketContextUpdated` event — a generic mechanism, not hardcoded per
+source:
+
+```python
+evidence = Evidence(
+    ...,
+    metadata={"context_hint": "fed_week"},  # -> MarketContextUpdated(context_type="macro_event", label="Fed Week")
+)
+```
+
+An unrecognized hint still gets promoted — the label falls back to a
+title-cased version of the hint string itself (see
+`_CONTEXT_HINT_LABELS` in `app/context/engine.py`), so you never need to
+touch that file to add a new macro context type.
+
+## 3. What you must never do
+
+- Never generate a buy/sell recommendation — evidence only, the same
+  vocabulary every other plugin in this codebase speaks.
+- Never bypass the Event Bus — `self._publish(intelligence_event,
+  evidence)` (or `self.context.event_bus.publish(...)` directly, for a
+  bare intelligence event with no matching evidence yet) is the only way
+  anything you do becomes visible.
+- Never call a real external API without being honest about it if you
+  can't (no network access, no credentials yet, ...) — see
+  `plugins/intelligence/news/plugin.py`'s docstring for how the reference
+  plugins handle this: clearly-labeled synthetic data
+  (`provider: "synthetic-news-feed"`), deterministic per symbol via a
+  stable seed, never presented as real.
+- Never import another intelligence plugin's module — if two sources
+  need to share logic, it belongs in `app/intelligence/plugin.py` (the
+  shared base), not in a peer-to-peer import.
+
+## 4. Test it
+
+Drive `poll_once()` directly (many polls, since real-world sources fire
+probabilistically) rather than waiting on the real interval — see
+`tests/test_news_plugin.py`, `tests/test_earnings_plugin.py`,
+`tests/test_macro_plugin.py`. See
+`tests/test_milestone7_pipeline_integration.py` for a full, real
+Indicator Plugins + External Intelligence Platform + Market Context
+Engine + Confidence Weighting Framework → `/analyze` run.
+
+Note: like the reference scanner, the reference News/Earnings/Macro
+plugins are disabled by default in the test suite's `settings` fixture
+(`tests/conftest.py`) for the same reason — each starts a real background
+polling task the moment it's loaded. Tests that want them enabled restore
+`settings.plugins.disabled` themselves, or construct the plugin directly
+and drive `poll_once()` by hand.

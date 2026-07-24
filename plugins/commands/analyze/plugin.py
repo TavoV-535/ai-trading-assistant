@@ -33,6 +33,16 @@ evidence for a symbol until *something* has actually published
 ``MarketDataUpdated`` for it. Until then, ``/analyze`` for any real-world
 symbol will honestly report "insufficient evidence" — the same graceful
 degradation the Reasoning Engine already uses everywhere else.
+
+Milestone 7 adds three more things to the rendered output, each pulled
+from a different Milestone 7 subsystem: the top confidence-weighted
+evidence from the Confidence Weighting Framework
+(``snapshot.weighted_evidence`` — see ``app/aggregation/weighting.py``),
+the current symbol-specific + market-wide labels from the Market Context
+Engine (``context.context_engine`` — another instance of the same
+read-only query exception ``evidence_aggregator``/``reasoning_engine``
+already use), and — already present via the Reasoning Engine's own output
+— the context it used to reach its synthesis.
 """
 from __future__ import annotations
 
@@ -100,13 +110,23 @@ class AnalyzePlugin(DiscordCommandPlugin):
         snapshot = aggregator.snapshot(symbol)
         output = await reasoning_engine.analyze(symbol)
 
+        context_engine = self.context.context_engine
+        context = {}
+        if context_engine is not None:
+            # Market-wide context first so symbol-specific labels (the
+            # more relevant answer for this one ticker) win on any
+            # context_type collision -- mirrors ReasoningEngine.context_for().
+            context = {**context_engine.snapshot(None), **context_engine.snapshot(symbol)}
+
         return CommandResponse(
-            content=_format_analysis(symbol, snapshot, output),
+            content=_format_analysis(symbol, snapshot, output, context),
             buttons=ACTION_REGISTRY.buttons_for(_ACTIONS, target=symbol),
         )
 
 
-def _format_analysis(symbol: str, snapshot: AggregateSnapshot, output: ReasoningOutput) -> str:
+def _format_analysis(
+    symbol: str, snapshot: AggregateSnapshot, output: ReasoningOutput, context: dict[str, str]
+) -> str:
     lines = [f"**{symbol} analysis** _(source: {output.source})_", "", output.market_summary]
 
     if output.source != "insufficient_evidence":
@@ -120,6 +140,10 @@ def _format_analysis(symbol: str, snapshot: AggregateSnapshot, output: Reasoning
         if output.historical_similarity:
             lines.append(f"**Historically similar to:** {output.historical_similarity}")
 
+    if context:
+        context_bits = ", ".join(f"{label}" for label in context.values())
+        lines.append(f"**Market context:** {context_bits}")
+
     conflict_note = " — **conflicting signals present**" if snapshot.has_conflict else ""
     lines.append("")
     lines.append(
@@ -127,5 +151,10 @@ def _format_analysis(symbol: str, snapshot: AggregateSnapshot, output: Reasoning
         f"({snapshot.bullish_count} bullish, {snapshot.bearish_count} bearish, "
         f"{snapshot.neutral_count} neutral){conflict_note}"
     )
+
+    if snapshot.weighted_evidence:
+        top = sorted(snapshot.weighted_evidence, key=lambda w: w.weight, reverse=True)[:5]
+        weighted_lines = "; ".join(f"{w.evidence.source} ({w.evidence.title}): {w.weight:.2f}" for w in top)
+        lines.append(f"Top weighted evidence _(Confidence Weighting Framework)_: {weighted_lines}")
 
     return "\n".join(lines)

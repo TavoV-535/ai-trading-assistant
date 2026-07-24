@@ -11,6 +11,8 @@ from app.event_bus.events import (
     EvidenceProduced,
     IndicatorCalculated,
     JournalCreated,
+    MacroEventOccurred,
+    MarketContextUpdated,
     MarketDataUpdated,
     NewsReceived,
     PositionUpdated,
@@ -20,6 +22,7 @@ from app.event_bus.events import (
     TradeClosed,
     TradeOpened,
     WatchlistTriggered,
+    WeightedEvidenceEvent,
 )
 
 __all__ = [
@@ -32,6 +35,7 @@ __all__ = [
     "IndicatorCalculated",
     "NewsReceived",
     "EarningsReleased",
+    "MacroEventOccurred",
     "TradeOpened",
     "TradeClosed",
     "PositionUpdated",
@@ -43,6 +47,8 @@ __all__ = [
     "RiskWarning",
     "EvidenceProduced",
     "EvidenceAggregated",
+    "WeightedEvidenceEvent",
+    "MarketContextUpdated",
     "CommandInvoked",
     "CommandFailed",
 ]

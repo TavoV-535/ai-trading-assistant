@@ -1,0 +1,4 @@
+# plugins/intelligence/macro/config.yaml
+#
+# No watchlist -- macro events are market-wide by design (symbol=None).
+interval_seconds: 10

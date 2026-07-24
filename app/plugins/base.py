@@ -31,6 +31,7 @@ from app.event_bus.bus import EventBus
 
 if TYPE_CHECKING:
     from app.aggregation.aggregator import EvidenceAggregator
+    from app.context.engine import MarketContextEngine
     from app.marketdata.service import MarketDataService
     from app.plugins.registry import PluginRegistry
     from app.reasoning.engine import ReasoningEngine
@@ -82,16 +83,18 @@ class PluginContext:
     needing to know about anything outside its own folder.
 
     ``reasoning_engine``, ``evidence_aggregator``, ``strategy_engine``,
-    ``market_data_service``, and ``plugin_registry`` are a deliberate,
-    narrow exception to "plugins only talk through the Event Bus." They
-    exist so a plugin can answer an on-demand, synchronous, read-only
-    query instead of only reacting to events — e.g. ``/analyze NVDA``
-    needs whatever the *current* evidence snapshot and reasoning output
-    are right now, not whatever the next event happens to publish; a
-    scanner plugin needs the *current* bar from the Market Data
+    ``market_data_service``, ``plugin_registry``, and ``context_engine``
+    are a deliberate, narrow exception to "plugins only talk through the
+    Event Bus." They exist so a plugin can answer an on-demand,
+    synchronous, read-only query instead of only reacting to events — e.g.
+    ``/analyze NVDA`` needs whatever the *current* evidence snapshot and
+    reasoning output are right now, not whatever the next event happens to
+    publish; a scanner plugin needs the *current* bar from the Market Data
     Abstraction Layer on every tick, not an event to react to (it's the
     thing that starts the event chain); ``/scan``'s status report needs to
-    see what's currently loaded. A plugin may read from these
+    see what's currently loaded; ``/analyze`` also needs the Market
+    Context Engine's *current* labels for a symbol (and market-wide) to
+    show alongside its evidence. A plugin may read from these
     (``.snapshot()``, ``.analyze()``, ``.matched_strategies_for()``,
     ``.fetch()``, ``.plugins``, etc.) but must never use them to mutate
     state, publish on another system's behalf, or reach into a specific
@@ -110,6 +113,7 @@ class PluginContext:
     strategy_engine: "StrategyEngine | None" = None
     market_data_service: "MarketDataService | None" = None
     plugin_registry: "PluginRegistry | None" = None
+    context_engine: "MarketContextEngine | None" = None
 
 
 class PluginBase(ABC):

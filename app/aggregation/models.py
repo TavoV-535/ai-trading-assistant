@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.event_bus.events import WeightedEvidenceEvent
 from app.evidence.schema import Evidence
 
 
@@ -54,4 +55,9 @@ class AggregateSnapshot(BaseModel):
     bearish_count: int = 0
     neutral_count: int = 0
     has_conflict: bool = False
+    #: Confidence Weighting Framework output for each item in
+    #: ``active_evidence``, same order — see ``app/aggregation/weighting.py``.
+    #: The raw ``active_evidence`` list above is untouched; this is a
+    #: parallel, explainable annotation, not a replacement.
+    weighted_evidence: list[WeightedEvidenceEvent] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=_utcnow)

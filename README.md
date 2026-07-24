@@ -10,10 +10,11 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-6 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-7 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
-`/analyze SYMBOL`, and the Scanner Engine + Market Data Abstraction Layer
-+ Discord Action Registry.**
+`/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
++ Discord Action Registry, and the External Intelligence Platform +
+Market Context Engine + Confidence Weighting Framework.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -28,16 +29,26 @@ nothing about any specific indicator) and the Reasoning Engine, which
 mentions matched strategies by name in its non-directive synthesis
 (Milestone 4); `/analyze SYMBOL` is the first command with a real
 parameter, pulling the current evidence + reasoning state for a symbol
-into an interactive message with buttons (Milestone 5); and the platform
-is now continuous end to end — a Scanner Engine ticks on a real background
+into an interactive message with buttons (Milestone 5); the platform
+became continuous end to end — a Scanner Engine ticks on a real background
 loop, reading market data only through a provider-agnostic Market Data
 Abstraction Layer (a CSV-replay/synthetic-random-walk reference provider
 ships today; a real live feed is a future provider plugin, zero Scanner
 Engine changes needed), while a centralized Discord Action Registry gives
-`/analyze` and the new `/scan` status command consistent, reusable buttons
-instead of each command building its own (Milestone 6). See
-[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
-next.
+`/analyze` and the `/scan` status command consistent, reusable buttons
+instead of each command building its own (Milestone 6); and now every
+non-price source of market information — News, Earnings, Macro, and any
+future source — is a plugin on one unified External Intelligence
+Platform, never a separate isolated engine; a new Market Context Engine
+derives real market-environment labels (Bull/Bear Trend, High/Low
+Volatility, Gap Day, Trend Exhaustion, Low Liquidity, market-wide
+Risk-On/Risk-Off, Fed Week/CPI Day/Earnings Season) from real price and
+intelligence data; and a Confidence Weighting Framework computes a
+transparent, normalized weight for every piece of evidence — freshness,
+persistence, source reliability, market regime, cross-confirmation,
+contradiction, and more — without ever hiding or replacing the original
+evidence (Milestone 7). See [`docs/MILESTONES.md`](./docs/MILESTONES.md)
+for what's done and what's next.
 
 ## Quick start (Docker — recommended)
 
@@ -69,6 +80,12 @@ NVDA/AAPL/TSLA against the bundled synthetic-random-walk data provider by
 default, so `/analyze NVDA` should show real, continuously-generated
 evidence within a few seconds of the app starting. Any other symbol
 reports `insufficient_evidence` until a scanner is configured to watch it.
+Note: the reference News/Earnings/Macro intelligence plugins and the
+reference scanner are enabled by default in a real deployment (only
+disabled in the test suite) — give it a minute or two and `/analyze
+NVDA`'s response will also show a **Market context** line and weighted
+evidence from the Confidence Weighting Framework, not just raw technical
+evidence.
 
 Stop everything with `./scripts/stop.sh`.
 
@@ -99,7 +116,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-199 tests, ~94% coverage of `app/` as of Milestone 6. Live Discord gateway
+262 tests, ~95% coverage of `app/` as of Milestone 7. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -118,16 +135,19 @@ app/
   db/           # SQLAlchemy models, Repository pattern, event persistence
   core/         # bootstrap/teardown sequencing + FastAPI app (/health, /plugins, /strategies, /scanners)
   indicators/   # shared calculation library every indicator plugin uses (not a plugin itself)
-  aggregation/  # Evidence Aggregator — dedup/freshness/conflict detection (not a plugin itself)
+  aggregation/  # Evidence Aggregator + Confidence Weighting Framework (not a plugin itself)
   strategy/     # Strategy Engine — compiles declarative YAML into a rule graph (not a plugin itself)
   marketdata/   # Market Data Abstraction Layer — provider-agnostic fetch() + failover (not a plugin itself)
   scanner/      # Scanner Plugin base — the continuous tick loop every scanner plugin shares
+  intelligence/ # IntelligencePlugin base — the shared External Intelligence Platform contract
+  context/      # Market Context Engine — derives Bull/Bear Trend, volatility, Risk-On/Off, ... (not a plugin itself)
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
   commands/     # ping/, analyze/, scan/
   market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
   scanners/     # core/ (reference watchlist scanner)
+  intelligence/ # news/, earnings/, macro/ (External Intelligence Platform reference plugins)
 alembic/        # migrations (async, driven by app.config settings)
 docker/         # Dockerfile, docker-compose.yml, entrypoint.sh
 docs/           # architecture, plugin guide, milestone tracker, Discord setup

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.context.engine import MarketContextEngine
 from app.db.base import Database
 from app.event_bus.bus import EventBus
 from app.marketdata.service import MarketDataService
@@ -28,6 +29,7 @@ class AppState:
     strategy_engine: StrategyEngine
     reasoning_engine: ReasoningEngine
     market_data_service: MarketDataService
+    context_engine: MarketContextEngine
     project_root: Path
     discord_bot: "TradingBot | None" = None
     discord_task: "asyncio.Task[None] | None" = None

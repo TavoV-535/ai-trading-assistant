@@ -33,6 +33,7 @@ class PluginRegistry:
         evidence_aggregator: Any | None = None,
         strategy_engine: Any | None = None,
         market_data_service: Any | None = None,
+        context_engine: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
@@ -45,6 +46,7 @@ class PluginRegistry:
         self._reasoning_engine = reasoning_engine
         self._evidence_aggregator = evidence_aggregator
         self._strategy_engine = strategy_engine
+        self._context_engine = context_engine
         # Mutable, not constructor-only: market data provider plugins load
         # in an earlier phase than everything else (see bootstrap.py), so
         # this starts as None and is set once the Market Data Abstraction
@@ -102,6 +104,7 @@ class PluginRegistry:
                 strategy_engine=self._strategy_engine,
                 market_data_service=self._market_data_service,
                 plugin_registry=self,
+                context_engine=self._context_engine,
             )
 
             try:

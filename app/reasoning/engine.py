@@ -15,6 +15,22 @@ If no AI provider is configured (no API key, or ``reasoning.enabled: false``
 in config), the engine still produces a useful, honest output: a
 deterministic summary built directly from the evidence, clearly labeled as
 evidence-only so it's never mistaken for an AI-generated thesis.
+
+Milestone 7 extends the engine with two more inputs, both consumed purely
+through the Event Bus like everything else here:
+
+- **Market context** (``MarketContextUpdated``, from
+  ``app/context/engine.py``) — the current market-environment labels for
+  a symbol (and market-wide), included in both the AI prompt and the
+  evidence-only fallback so a synthesis can say "in a Bull Trend, High
+  Volatility environment" instead of reasoning about evidence in a
+  vacuum.
+- **Confidence-weighted evidence** (``EvidenceAggregated.weighted_evidence``,
+  from the Confidence Weighting Framework — ``app/aggregation/weighting.py``)
+  — each piece of evidence's normalized weight is attached to the AI
+  payload and folded into the evidence-only summary's confidence
+  calculation, without ever replacing or hiding the raw, unweighted
+  evidence itself.
 """
 from __future__ import annotations
 
@@ -26,7 +42,7 @@ from pydantic import BaseModel, Field
 
 from app.evidence.schema import Evidence
 from app.event_bus.bus import EventBus
-from app.event_bus.events import EvidenceAggregated, StrategyMatched
+from app.event_bus.events import EvidenceAggregated, MarketContextUpdated, StrategyMatched, WeightedEvidenceEvent
 from app.logging import get_logger
 from app.reasoning.providers.base import ReasoningProvider
 
@@ -71,17 +87,34 @@ class ReasoningOutput(BaseModel):
     historical_similarity: str | None = None
     evidence_count: int = 0
     source: str = "ai"  # "ai" | "evidence_only" | "insufficient_evidence"
+    #: The Market Context Engine's current labels actually used to build
+    #: this analysis -- symbol-specific and market-wide combined, keyed
+    #: by context_type (e.g. {"trend": "Bull Trend", "risk_regime": "Risk-On"}).
+    context: dict[str, str] = Field(default_factory=dict)
 
 
 class ReasoningEngine:
-    """Accumulates evidence per symbol and synthesizes it on demand."""
+    """Accumulates evidence, market context, and matched strategies per
+    symbol, and synthesizes them into an explanation on demand."""
 
     def __init__(self, settings: Any, provider: ReasoningProvider | None = None, *, max_evidence_per_symbol: int = 50) -> None:
         self._settings = settings
         self._provider = provider
         self._max_evidence_per_symbol = max_evidence_per_symbol
         self._evidence_by_symbol: dict[str, list[Evidence]] = defaultdict(list)
+        self._weighted_evidence_by_symbol: dict[str, list[WeightedEvidenceEvent]] = defaultdict(list)
         self._matched_strategies_by_symbol: dict[str, list[StrategyMatched]] = defaultdict(list)
+        #: Market Context Engine labels, kept per symbol and separately
+        #: for market-wide context (symbol=None on MarketContextUpdated).
+        #: Known limitation, not a bug: the Context Engine only publishes
+        #: on a label *changing* (see app/context/engine.py's edge-
+        #: triggering), including going silent rather than announcing
+        #: "back to normal" for non-trend context types -- so a context
+        #: label here can go stale if the underlying condition quietly
+        #: lapses. Trend always has an active label (Bull/Bear/Sideways),
+        #: so it never goes stale this way.
+        self._context_by_symbol: dict[str, dict[str, str]] = defaultdict(dict)
+        self._market_wide_context: dict[str, str] = {}
 
     def attach(self, event_bus: EventBus) -> None:
         """Subscribe to the Evidence Aggregator's output — never raw
@@ -89,9 +122,12 @@ class ReasoningEngine:
         that the aggregator be the single interface both the Strategy
         Engine and the Reasoning Engine consume. Also subscribes to
         ``StrategyMatched`` so a declarative strategy firing shows up in
-        this engine's synthesis alongside raw evidence."""
+        this engine's synthesis alongside raw evidence, and to
+        ``MarketContextUpdated`` so the Market Context Engine's labels
+        (Milestone 7) shape the synthesis too."""
         event_bus.subscribe(EvidenceAggregated, self._on_evidence_aggregated, name="reasoning_engine")
         event_bus.subscribe(StrategyMatched, self._on_strategy_matched, name="reasoning_engine_strategies")
+        event_bus.subscribe(MarketContextUpdated, self._on_context_updated, name="reasoning_engine_context")
 
     async def _on_evidence_aggregated(self, event: EvidenceAggregated) -> None:
         # The aggregator already dedupes and decays evidence for us — this
@@ -104,6 +140,7 @@ class ReasoningEngine:
         if len(bucket) > self._max_evidence_per_symbol:
             bucket = bucket[-self._max_evidence_per_symbol :]
         self._evidence_by_symbol[symbol] = bucket
+        self._weighted_evidence_by_symbol[symbol] = list(event.weighted_evidence)
 
     async def _on_strategy_matched(self, event: StrategyMatched) -> None:
         bucket = self._matched_strategies_by_symbol[event.symbol]
@@ -111,11 +148,30 @@ class ReasoningEngine:
         if len(bucket) > 20:
             del bucket[: len(bucket) - 20]
 
+    async def _on_context_updated(self, event: MarketContextUpdated) -> None:
+        if event.symbol is None:
+            self._market_wide_context[event.context_type] = event.label
+        else:
+            self._context_by_symbol[event.symbol][event.context_type] = event.label
+
     def evidence_for(self, symbol: str) -> list[Evidence]:
         return list(self._evidence_by_symbol.get(symbol, []))
 
+    def weighted_evidence_for(self, symbol: str) -> list[WeightedEvidenceEvent]:
+        return list(self._weighted_evidence_by_symbol.get(symbol, []))
+
     def matched_strategies_for(self, symbol: str) -> list[StrategyMatched]:
         return list(self._matched_strategies_by_symbol.get(symbol, []))
+
+    def context_for(self, symbol: str) -> dict[str, str]:
+        """Combined symbol-specific + market-wide context, symbol-specific
+        labels winning on a context_type collision (there shouldn't be
+        one in practice — symbol and market-wide context_types don't
+        currently overlap, but symbol-specific is the more relevant
+        answer if they ever do)."""
+        combined = dict(self._market_wide_context)
+        combined.update(self._context_by_symbol.get(symbol, {}))
+        return combined
 
     async def analyze(self, symbol: str) -> ReasoningOutput:
         """Answer the project's core questions for ``symbol`` from accumulated evidence."""
@@ -130,6 +186,7 @@ class ReasoningEngine:
                 confidence=0,
                 evidence_count=len(evidence),
                 source="insufficient_evidence",
+                context=self.context_for(symbol),
             )
 
         if self._provider is None or not self._settings.reasoning.enabled:
@@ -144,13 +201,23 @@ class ReasoningEngine:
     # ---------------------------------------------------------------- AI path
 
     async def _ai_summary(self, symbol: str, evidence: list[Evidence]) -> ReasoningOutput:
-        payload = [e.model_dump(mode="json") for e in evidence]
-        prompt = f"Symbol: {symbol}\n\nEvidence:\n{json.dumps(payload, indent=2)}"
+        weight_by_id = {w.evidence.evidence_id: w.weight for w in self.weighted_evidence_for(symbol)}
+        payload = []
+        for e in evidence:
+            item = e.model_dump(mode="json")
+            item["confidence_weight"] = weight_by_id.get(e.evidence_id)
+            payload.append(item)
+        prompt = f"Symbol: {symbol}\n\nEvidence (each item's \"confidence_weight\" is the Confidence Weighting Framework's normalized [0,1] trust score for it, not the plugin's own confidence):\n{json.dumps(payload, indent=2)}"
 
         matched = self.matched_strategies_for(symbol)
         if matched:
             strategy_lines = "\n".join(f"- {m.strategy} (score {m.score}, {m.evidence_count} evidence)" for m in matched)
             prompt += f"\n\nDeclarative strategies currently matched for this symbol:\n{strategy_lines}"
+
+        context = self.context_for(symbol)
+        if context:
+            context_lines = "\n".join(f"- {ctype}: {label}" for ctype, label in sorted(context.items()))
+            prompt += f"\n\nCurrent market context (from the Market Context Engine):\n{context_lines}"
 
         raw = await self._provider.generate(
             system=_SYSTEM_PROMPT,
@@ -169,6 +236,7 @@ class ReasoningEngine:
             historical_similarity=data.get("historical_similarity"),
             evidence_count=len(evidence),
             source="ai",
+            context=context,
         )
 
     # ---------------------------------------------------------------- fallback path
@@ -181,12 +249,28 @@ class ReasoningEngine:
         bearish = [e for e in evidence if e.direction == "bearish"]
         neutral = [e for e in evidence if e.direction == "neutral"]
 
-        total_weight = sum(e.score for e in evidence) or 1.0
-        avg_confidence = sum(e.confidence * e.score for e in evidence) / total_weight
+        weighted = self.weighted_evidence_for(symbol)
+        weight_by_id = {w.evidence.evidence_id: w.weight for w in weighted}
 
-        if len(bullish) > len(bearish):
+        if weighted:
+            # Confidence Weighting Framework available -- lean and
+            # confidence are computed from weighted mass, not raw counts,
+            # so a handful of highly-weighted signals can outweigh a
+            # larger pile of low-weight ones (see app/aggregation/weighting.py).
+            weighted_mass: dict[str, float] = defaultdict(float)
+            for w in weighted:
+                weighted_mass[w.evidence.direction] += w.weight
+            lean_source = weighted_mass
+            total_weight_sum = sum(weight_by_id.get(e.evidence_id, 1.0) * e.score for e in evidence) or 1.0
+            avg_confidence = sum(e.confidence * e.score * weight_by_id.get(e.evidence_id, 1.0) for e in evidence) / total_weight_sum
+        else:
+            lean_source = {"bullish": len(bullish), "bearish": len(bearish)}
+            total_weight = sum(e.score for e in evidence) or 1.0
+            avg_confidence = sum(e.confidence * e.score for e in evidence) / total_weight
+
+        if lean_source.get("bullish", 0) > lean_source.get("bearish", 0):
             lean = "bullish"
-        elif len(bearish) > len(bullish):
+        elif lean_source.get("bearish", 0) > lean_source.get("bullish", 0):
             lean = "bearish"
         else:
             lean = "mixed"
@@ -197,6 +281,11 @@ class ReasoningEngine:
             f"({len(bullish)} bullish, {len(bearish)} bearish, {len(neutral)} neutral). "
             f"Overall lean: {lean}. Most recent: {titles}."
         )
+
+        context = self.context_for(symbol)
+        if context:
+            context_bits = ", ".join(f"{label}" for label in context.values())
+            summary += f" Current market context: {context_bits}."
 
         matched = self.matched_strategies_for(symbol)
         if matched:
@@ -216,6 +305,7 @@ class ReasoningEngine:
             historical_similarity=None,
             evidence_count=len(evidence),
             source="evidence_only",
+            context=context,
         )
 
 

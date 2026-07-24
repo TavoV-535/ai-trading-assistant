@@ -28,9 +28,11 @@ plugins:
     - "plugins/indicators"
     - "plugins/strategies"
     - "plugins/scanners"
-    - "plugins/news"
-    - "plugins/earnings"
-    - "plugins/macro"
+    # One unified External Intelligence Platform folder (Milestone 7) --
+    # News, Earnings, Macro, and any future source (SEC filings, insider
+    # activity, economic calendar, ...) are all plugins under here, not
+    # separate isolated search paths. See app/intelligence/plugin.py.
+    - "plugins/intelligence"
     - "plugins/ai"
     - "plugins/broker"
     - "plugins/journals"
@@ -82,3 +84,54 @@ market_data:
   # A symbol/timeframe the first provider doesn't have falls over to the
   # next one instead of failing the whole fetch.
   providers: ["replay"]
+
+intelligence:
+  # Default poll interval for every External Intelligence Platform plugin
+  # that doesn't set its own interval_seconds in its config.yaml.
+  interval_seconds: 60
+
+context:
+  # Thresholds the Market Context Engine (app/context/engine.py) uses to
+  # derive Bull/Bear/Sideways trend, High/Low Volatility, Gap Day, Trend
+  # Exhaustion, Low Liquidity, and market-wide Risk-On/Risk-Off from raw
+  # price/volume history -- tune per asset class without touching code.
+  trend_window: 20
+  trend_bull_threshold_pct: 1.5
+  trend_bear_threshold_pct: -1.5
+  volatility_window: 20
+  high_volatility_threshold_pct: 2.0
+  low_volatility_threshold_pct: 0.3
+  gap_threshold_pct: 2.0
+  low_liquidity_volume_ratio: 0.4
+  risk_regime_min_symbols: 2
+  risk_regime_majority_ratio: 0.6
+
+confidence_weighting:
+  # Per-source reliability multiplier used by the Confidence Weighting
+  # Framework (app/aggregation/weighting.py). Any source not listed here
+  # falls back to DEFAULT_SOURCE_RELIABILITY (0.75). This also doubles as
+  # a stand-in for "historical reliability" until a real trade-outcome
+  # history exists to derive it empirically instead of by config.
+  source_reliability:
+    EMA: 0.75
+    SMA: 0.7
+    VWAP: 0.75
+    RSI: 0.75
+    MACD: 0.75
+    ATR: 0.65
+    ADX: 0.7
+    Bollinger: 0.7
+    Supertrend: 0.75
+    OBV: 0.65
+    CCI: 0.65
+    Ichimoku: 0.7
+    Donchian: 0.7
+    VolumeProfile: 0.65
+    News: 0.55
+    Earnings: 0.8
+    Macro: 0.85
+  max_cross_confirmation_boost: 0.5
+  max_timeframe_alignment_boost: 0.2
+  contradiction_penalty: 0.5
+  regime_aligned_boost: 1.2
+  regime_opposed_penalty: 0.85

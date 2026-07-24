@@ -1,0 +1,9 @@
+# plugins/intelligence/news/config.yaml
+#
+# Same watchlist convention as plugins/scanners/core/ -- a real deployment
+# would point this at whatever symbols the user actually watches. A short
+# interval keeps local/dev usage lively; see IntelligencePlugin's docstring
+# for why polling (vs. a push feed) is the shared shape every reference
+# intelligence plugin uses today.
+watchlist: ["NVDA", "AAPL", "TSLA"]
+interval_seconds: 8

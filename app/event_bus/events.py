@@ -109,6 +109,27 @@ class EarningsReleased(Event):
     surprise_percent: float | None = None
 
 
+class MacroEventOccurred(Event):
+    """A normalized macro/economic-calendar event — Fed announcements, CPI
+    releases, jobs reports, treasury auctions, government events, and so
+    on. One event type covers all of them (rather than a separate schema
+    per macro source) because every External Intelligence Platform macro
+    plugin describes the same shape: what happened, an optional
+    market-wide-vs-symbol-specific scope, and a free-form
+    ``macro_event_type`` plugins and the Market Context Engine both key
+    off of (e.g. ``"fed_meeting"``, ``"cpi_release"``, ``"jobs_report"``)
+    — named ``macro_event_type`` rather than ``event_type`` to avoid
+    shadowing :attr:`Event.event_type`, the base class's own routing
+    property. See ``app/context/engine.py``'s macro-event promotion for
+    how a ``context_hint`` in ``metadata`` becomes a
+    ``MarketContextUpdated`` label like "Fed Week" or "CPI Day"."""
+
+    macro_event_type: str
+    title: str
+    symbol: str | None = None  # None == market-wide, e.g. a Fed announcement
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------- trading lifecycle
 
 
@@ -214,6 +235,20 @@ class EvidenceProduced(Event):
     evidence: Evidence
 
 
+class WeightedEvidenceEvent(BaseModel):
+    """The Confidence Weighting Framework's per-evidence output, as carried
+    on ``EvidenceAggregated``/``AggregateSnapshot``. See
+    ``app/aggregation/weighting.py`` for how ``weight`` is computed —
+    ``breakdown`` keeps every named factor visible for transparency rather
+    than collapsing straight to one opaque number."""
+
+    model_config = ConfigDict(frozen=True)
+
+    evidence: Evidence
+    weight: float = Field(ge=0.0, le=1.0)
+    breakdown: dict[str, float] = Field(default_factory=dict)
+
+
 class EvidenceAggregated(Event):
     """Published by the Evidence Aggregator (`app/aggregation/`) every time
     it processes an ``EvidenceProduced`` event — this is the single
@@ -234,6 +269,34 @@ class EvidenceAggregated(Event):
     enrichment: dict[str, Any] = Field(default_factory=dict)
     active_evidence: list[Evidence] = Field(default_factory=list)
     has_conflict: bool = False
+    #: Parallel view of ``active_evidence`` carrying the Confidence
+    #: Weighting Framework's normalized weight + explainable breakdown for
+    #: each item (see ``app/aggregation/weighting.py``). Always the same
+    #: length/order as ``active_evidence`` — the original Evidence objects
+    #: are never replaced, only annotated alongside.
+    weighted_evidence: list[WeightedEvidenceEvent] = Field(default_factory=list)
+
+
+class MarketContextUpdated(Event):
+    """Published by the Market Context Engine (``app/context/engine.py``)
+    whenever a higher-level market-environment label changes — not raw
+    evidence, a *regime* (Bull Trend, High Volatility, Fed Week, ...).
+
+    ``symbol`` is ``None`` for market-wide context (Risk-On/Risk-Off, Fed
+    Week, CPI Day, Holiday Session, ...) and set for symbol-specific
+    context (Bull/Bear Trend, Gap Day, Trend Exhaustion, Low Liquidity,
+    ...). ``context_type`` buckets the label into a family (``"trend"``,
+    ``"volatility"``, ``"gap"``, ``"exhaustion"``, ``"liquidity"``,
+    ``"macro_event"``, ``"risk_regime"``) so consumers can look up "the
+    current trend context for NVDA" without string-matching every label.
+    Edge-triggered: the engine only publishes when a label actually
+    changes for a given ``(symbol, context_type)``, never every tick."""
+
+    symbol: str | None = None
+    context_type: str
+    label: str
+    confidence: float = Field(default=100.0, ge=0.0, le=100.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 EVENT_TYPES: dict[str, type[Event]] = {
@@ -244,6 +307,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         IndicatorCalculated,
         NewsReceived,
         EarningsReleased,
+        MacroEventOccurred,
         TradeOpened,
         TradeClosed,
         PositionUpdated,
@@ -255,6 +319,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         RiskWarning,
         EvidenceProduced,
         EvidenceAggregated,
+        MarketContextUpdated,
         CommandInvoked,
         CommandFailed,
     )

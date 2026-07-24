@@ -168,3 +168,90 @@ async def test_snapshot_for_unknown_symbol_is_empty(settings):
     snap = aggregator.snapshot("NOTHING_EVER_PUBLISHED")
     assert snap.active_evidence == []
     assert snap.has_conflict is False
+
+
+# ---------------------------------------------------------------- Milestone 7: Confidence Weighting Framework
+
+
+async def test_evidence_aggregated_carries_weighted_evidence_alongside_raw(event_bus, settings):
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+
+    seen = []
+    event_bus.subscribe(EvidenceAggregated, lambda e: seen.append(e))
+
+    await _publish_evidence(event_bus, "EMA", "Bullish EMA Cross", "bullish")
+    await asyncio.sleep(0.05)
+
+    assert len(seen[0].weighted_evidence) == 1
+    weighted = seen[0].weighted_evidence[0]
+    # the original evidence is untouched -- same object, not a mutated copy
+    assert weighted.evidence == seen[0].active_evidence[0]
+    assert 0.0 <= weighted.weight <= 1.0
+    assert "source_reliability" in weighted.breakdown
+
+
+async def test_snapshot_weighted_evidence_matches_active_evidence_length(event_bus, settings):
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+
+    await _publish_evidence(event_bus, "EMA", "Bullish EMA Cross", "bullish")
+    await _publish_evidence(event_bus, "RSI", "RSI Oversold", "bullish")
+    await asyncio.sleep(0.05)
+
+    snap = aggregator.snapshot("NVDA")
+    assert len(snap.weighted_evidence) == len(snap.active_evidence)
+    weighted_ids = {w.evidence.evidence_id for w in snap.weighted_evidence}
+    active_ids = {e.evidence_id for e in snap.active_evidence}
+    assert weighted_ids == active_ids
+
+
+async def test_repeated_evidence_gets_a_higher_persistence_weight(event_bus, settings):
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+
+    for _ in range(5):
+        await _publish_evidence(event_bus, "RSI", "RSI Overbought", "bearish")
+    await asyncio.sleep(0.05)
+
+    snap = aggregator.snapshot("NVDA")
+    weighted = snap.weighted_evidence[0]
+    assert weighted.breakdown["persistence"] == 1.0  # occurrence_count 5 -> full persistence factor
+
+
+async def test_market_context_updated_influences_regime_alignment_weight(event_bus, settings):
+    from app.event_bus.events import MarketContextUpdated
+
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+
+    await event_bus.publish(
+        MarketContextUpdated(source="test", symbol="NVDA", context_type="trend", label="Bull Trend")
+    )
+    await asyncio.sleep(0.02)
+
+    await _publish_evidence(event_bus, "EMA", "Bullish EMA Cross", "bullish")
+    await asyncio.sleep(0.05)
+
+    snap = aggregator.snapshot("NVDA")
+    weighted = snap.weighted_evidence[0]
+    assert weighted.breakdown["regime_alignment"] > 1.0  # bullish evidence aligned with Bull Trend
+
+
+async def test_non_trend_context_types_are_ignored_for_weighting(event_bus, settings):
+    from app.event_bus.events import MarketContextUpdated
+
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+
+    await event_bus.publish(
+        MarketContextUpdated(source="test", symbol="NVDA", context_type="volatility", label="High Volatility")
+    )
+    await asyncio.sleep(0.02)
+
+    await _publish_evidence(event_bus, "EMA", "Bullish EMA Cross", "bullish")
+    await asyncio.sleep(0.05)
+
+    snap = aggregator.snapshot("NVDA")
+    weighted = snap.weighted_evidence[0]
+    assert weighted.breakdown["regime_alignment"] == 1.0  # only "trend" context_type feeds weighting

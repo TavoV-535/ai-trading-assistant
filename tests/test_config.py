@@ -10,6 +10,16 @@ def test_defaults_load_from_yaml(settings):
     assert settings.reasoning.model == "claude-opus-4-8"
 
 
+def test_milestone7_sections_load_from_yaml(settings):
+    assert "plugins/intelligence" in settings.plugins.search_paths
+    assert "plugins/news" not in settings.plugins.search_paths  # replaced by the unified platform
+    assert settings.intelligence.interval_seconds > 0
+    assert settings.context.trend_window == 20
+    assert settings.context.trend_bull_threshold_pct > 0
+    assert settings.confidence_weighting.source_reliability["EMA"] == 0.75
+    assert settings.confidence_weighting.regime_aligned_boost > 1.0
+
+
 def test_env_var_overrides_yaml(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("REASONING_MODEL", "claude-sonnet-5")

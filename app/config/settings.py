@@ -102,6 +102,48 @@ class AggregationSection(BaseModel):
     max_history_per_symbol: int = 500
 
 
+class IntelligenceSection(BaseModel):
+    #: Default poll interval for every External Intelligence Platform
+    #: plugin (News, Earnings, Macro, ...) that doesn't set its own
+    #: ``interval_seconds`` in its ``config.yaml``. See
+    #: app/intelligence/plugin.py.
+    interval_seconds: int = 60
+
+
+class ContextSection(BaseModel):
+    """Tunable thresholds for the Market Context Engine
+    (``app/context/engine.py``). Every derivation it makes reads its
+    threshold from here rather than a hardcoded constant, so an operator
+    can retune what counts as "trending" or "high volatility" for a given
+    asset class without touching code."""
+
+    trend_window: int = 20
+    trend_bull_threshold_pct: float = 1.5
+    trend_bear_threshold_pct: float = -1.5
+    volatility_window: int = 20
+    high_volatility_threshold_pct: float = 2.0
+    low_volatility_threshold_pct: float = 0.3
+    gap_threshold_pct: float = 2.0
+    low_liquidity_volume_ratio: float = 0.4
+    risk_regime_min_symbols: int = 2
+    risk_regime_majority_ratio: float = 0.6
+
+
+class ConfidenceWeightingSection(BaseModel):
+    """Tunable inputs for the Confidence Weighting Framework
+    (``app/aggregation/weighting.py``). ``source_reliability`` maps an
+    evidence ``source`` name (e.g. ``"EMA"``, ``"News"``, ``"Macro"``) to
+    a ``[0, 1]`` reliability multiplier; any source not listed falls back
+    to ``app.aggregation.weighting.DEFAULT_SOURCE_RELIABILITY``."""
+
+    source_reliability: dict[str, float] = Field(default_factory=dict)
+    max_cross_confirmation_boost: float = 0.5
+    max_timeframe_alignment_boost: float = 0.2
+    contradiction_penalty: float = 0.5
+    regime_aligned_boost: float = 1.2
+    regime_opposed_penalty: float = 0.85
+
+
 class Settings(BaseSettings):
     """Root settings object. Instantiate via :func:`get_settings`."""
 
@@ -138,6 +180,9 @@ class Settings(BaseSettings):
     discord: DiscordSection = Field(default_factory=DiscordSection)
     aggregation: AggregationSection = Field(default_factory=AggregationSection)
     market_data: MarketDataSection = Field(default_factory=MarketDataSection)
+    intelligence: IntelligenceSection = Field(default_factory=IntelligenceSection)
+    context: ContextSection = Field(default_factory=ContextSection)
+    confidence_weighting: ConfidenceWeightingSection = Field(default_factory=ConfidenceWeightingSection)
 
     @classmethod
     def settings_customise_sources(

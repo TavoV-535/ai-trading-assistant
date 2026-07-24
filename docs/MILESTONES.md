@@ -295,21 +295,111 @@ a silent assumption.
   health and `/analyze`'s buttons routed entirely through the Action
   Registry (see the Milestone 6 completion report for the transcript).
 
+## Milestone 7 — External Intelligence Platform + Market Context Engine + Confidence Weighting Framework ✅ complete
+
+- **External Intelligence Platform** (`app/intelligence/`,
+  `plugins/intelligence/`) — per PROJECT.md's explicit instruction, one
+  unified plugin category, not separate isolated News/Earnings/Macro/SEC/
+  Insider/Economic-Calendar engines. `IntelligencePlugin` implements the
+  Universal Plugin Contract generically plus a config-driven polling loop
+  (mirroring `ScannerPlugin`'s tick loop) and a `_publish(event, evidence)`
+  helper that keeps every intelligence plugin's (Intelligence Event,
+  Evidence) pair from drifting out of sync. **Three independent reference
+  plugins**, each its own file sharing only the base contract:
+  `News` (`NewsReceived`), `Earnings` (`EarningsReleased`, with a
+  cross-symbol "earnings season" heuristic when multiple watchlist symbols
+  report together), `Macro` (`MacroEventOccurred`, always market-wide —
+  Fed meetings, CPI releases, jobs reports, treasury auctions, holiday
+  sessions). Like `ReplayProviderPlugin` (Milestone 6), none call a real
+  external API — deterministic, clearly-labeled synthetic data, honestly
+  documented as such, never presented as real. Every macro/calendar event
+  carries `metadata["context_hint"]`, a generic convention the Market
+  Context Engine reads without knowing which plugin published it.
+- **Market Context Engine** (`app/context/`) — a new core system (not a
+  plugin) that derives higher-level market-environment labels from real,
+  computed signals: Bull/Bear Trend and Sideways Market (rolling-window %
+  change), High/Low Volatility (rolling-window return stdev), Gap Day
+  (large jump between consecutive updates), Trend Exhaustion (decelerating
+  second half of the trend window), Low Liquidity (volume vs. trailing
+  average), market-wide Risk-On/Risk-Off (a genuine cross-symbol
+  aggregate — majority of tracked symbols in the same trend direction),
+  and macro/calendar context (Fed Week, CPI Day, Earnings Season, ... —
+  promoted from intelligence evidence's `context_hint`, generic and
+  extensible). Publishes `MarketContextUpdated`, edge-triggered per
+  `(symbol, context_type)` — never spams the bus on every tick a label
+  continues to hold. Never calls the Evidence Aggregator, Strategy Engine,
+  or Reasoning Engine directly (checked structurally in
+  `tests/test_milestone7_pipeline_integration.py`) — only
+  `MarketContextUpdated`, only through the Event Bus.
+- **Confidence Weighting Framework** (`app/aggregation/weighting.py`) —
+  extends the Evidence Aggregator with a normalized `[0, 1]` weight (plus
+  a fully transparent `breakdown` dict) per active piece of evidence,
+  considering source/historical reliability (config, per source),
+  freshness, persistence, timeframe alignment, cross-indicator
+  confirmation, contradictory evidence, market regime (reads the Context
+  Engine's current trend label via `MarketContextUpdated`), a documented
+  correlation-dampening proxy, and an explicit no-op seam for future ML
+  adjustments. Every factor is independently unit tested. **The original
+  Evidence objects are never modified, replaced, or discarded** —
+  `EvidenceAggregated.weighted_evidence` and
+  `AggregateSnapshot.weighted_evidence` are always parallel, explainable
+  annotations alongside the unweighted `active_evidence`.
+- **Reasoning Engine updated** (`app/reasoning/engine.py`) — subscribes to
+  `MarketContextUpdated` in addition to `EvidenceAggregated`/
+  `StrategyMatched`. AI-mode prompts now carry each evidence item's
+  `confidence_weight` and a "current market context" section; evidence-
+  only-mode lean/confidence are computed from weighted mass when weighted
+  evidence is available (not just raw counts), and the summary text names
+  the current context labels. `ReasoningOutput.context` exposes exactly
+  what context was used, for transparency.
+- **`/analyze` updated** (`plugins/commands/analyze/`) — now reads
+  `context.context_engine` (a new `PluginContext` field, the same
+  documented read-only-query exception) alongside the existing
+  `evidence_aggregator`/`reasoning_engine`, and renders all four Milestone
+  7 dimensions in one response: technical + fundamental evidence counts, a
+  **Market context** line (market-wide + symbol-specific labels), and the
+  top confidence-weighted evidence with its framework-computed weight.
+- `config/default.yaml` gains `plugins/intelligence` in
+  `plugins.search_paths` (replacing the unused `plugins/news`/
+  `plugins/earnings`/`plugins/macro` stubs from Milestone 1's scaffolding)
+  plus three new tunable sections: `intelligence` (default poll interval),
+  `context` (every Market Context Engine threshold), and
+  `confidence_weighting` (per-source reliability + every weighting
+  factor's tunable constant).
+- 63 new tests (7 IntelligencePlugin base contract, 4 News, 3 Earnings, 2
+  Macro, 17 Market Context Engine, 16 Confidence Weighting Framework math,
+  5 Evidence Aggregator weighting integration, 5 Reasoning Engine
+  context/weighting, 2 `/analyze` context display, 1 full Milestone 7
+  pipeline integration test proving all four dimensions reach `/analyze`
+  together, 2 architectural import-guardrail tests, 1 config test) plus
+  existing tests updated (`tests/conftest.py` now also disables News/
+  Earnings/Macro by default, same reasoning as the Milestone 6 scanner
+  fix); 262 tests passing total, ~95% coverage of `app/` (improved from
+  Milestone 6's ~94%), ruff clean.
+- Live-verified end to end: real indicator plugins + real News/Earnings/
+  Macro intelligence plugins + a real Market Context Engine (deriving a
+  genuine "Bull Trend" from the same validated bar sequence
+  `tests/test_pipeline_integration.py` uses) + the Confidence Weighting
+  Framework producing genuinely different weights per evidence item, all
+  flowing into a real `/analyze NVDA` response citing the matched
+  "Momentum Breakout" strategy, the derived market context, and the
+  weighted evidence — the same `AnalyzePlugin` the Discord bot runs (see
+  `tests/test_milestone7_pipeline_integration.py`).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
 open to reordering based on what you want to see working first:
 
-1. **News / Earnings / Macro engines** — each a plugin category, each only
-   ever publishing `NewsReceived` / `EarningsReleased` / evidence, never a
-   directive.
-2. **A real market data provider** (Polygon/Alpaca/Finnhub/similar) —
+1. **A real market data provider** (Polygon/Alpaca/Finnhub/similar) —
    implements `MarketDataProviderPlugin` exactly like `ReplayProviderPlugin`
    does; add it to `settings.market_data.providers` and the Scanner Engine
    picks it up with zero changes. Needs a real API credential this
    environment doesn't have, so it's a "when you're ready" item, not a
-   blocker for anything else.
-3. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
+   blocker for anything else. A real News/Earnings/Macro provider (a real
+   API instead of the synthetic reference plugins) is the same story for
+   `settings.intelligence`-driven plugins.
+2. **Watchlists**, then **Backtesting**, then **Journaling**, **Risk
    Engine**, **AI Coach**, **Replay Mode**, **Optimization Engine**,
    **Personal Statistics** — roughly in that order, since each leans on the
    ones before it (backtesting needs strategies + indicators; the coach
@@ -319,6 +409,10 @@ open to reordering based on what you want to see working first:
    behavior instead of a placeholder reply — each is a single
    `ACTION_REGISTRY.register_handler()` call once the backing system
    exists.
+3. **More External Intelligence Platform sources** — SEC filings, insider
+   activity, FDA approvals, M&A, buybacks, dividends, stock splits — each
+   is a new folder under `plugins/intelligence/` against the same
+   `IntelligencePlugin` contract Milestone 7 established, no core changes.
 
 Say the word and the next milestone starts. Nothing here commits to a
 specific order — just say which one you want first.

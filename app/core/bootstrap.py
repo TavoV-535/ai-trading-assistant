@@ -14,6 +14,7 @@ from typing import Any
 
 from app.aggregation.aggregator import EvidenceAggregator
 from app.config import get_settings
+from app.context.engine import MarketContextEngine
 from app.core.state import AppState
 from app.db.base import Database
 from app.db.event_logger import attach_event_logger
@@ -50,11 +51,26 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     database = Database(settings)
     attach_event_logger(event_bus, database)
 
-    # Evidence Aggregator sits between every evidence producer (indicator
-    # plugins today; news/earnings/macro/scanners later) and everything
-    # that consumes evidence. It's the single interface both the Strategy
-    # Engine and the Reasoning Engine subscribe to — neither subscribes to
-    # raw EvidenceProduced directly. See app/aggregation/aggregator.py.
+    # Market Context Engine derives higher-level market-environment labels
+    # (Bull/Bear Trend, High/Low Volatility, Gap Day, Trend Exhaustion,
+    # Risk-On/Risk-Off, Fed Week, CPI Day, ...) from MarketDataUpdated and
+    # intelligence EvidenceProduced events, publishing MarketContextUpdated.
+    # Attached before the Evidence Aggregator so the aggregator's
+    # confidence-weighting subscription (below) sees context from the
+    # first tick onward — subscription *order* doesn't actually matter to
+    # either engine, but this keeps bootstrap reading top-to-bottom as the
+    # data actually flows. See app/context/engine.py.
+    context_engine = MarketContextEngine(settings)
+    context_engine.attach(event_bus)
+
+    # Evidence Aggregator sits between every evidence producer (14
+    # indicator plugins + the News/Earnings/Macro intelligence plugins
+    # today; more External Intelligence Platform sources later) and
+    # everything that consumes evidence. It's the single interface both
+    # the Strategy Engine and the Reasoning Engine subscribe to — neither
+    # subscribes to raw EvidenceProduced directly. It also subscribes to
+    # MarketContextUpdated as a Confidence Weighting Framework input (see
+    # app/aggregation/weighting.py) — market regime, not raw evidence.
     evidence_aggregator = EvidenceAggregator(settings)
     evidence_aggregator.attach(event_bus)
 
@@ -88,6 +104,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         reasoning_engine=reasoning_engine,
         evidence_aggregator=evidence_aggregator,
         strategy_engine=strategy_engine,
+        context_engine=context_engine,
     )
 
     # Phase 1: market data provider plugins load first, in isolation. The
@@ -134,6 +151,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         strategy_engine=strategy_engine,
         reasoning_engine=reasoning_engine,
         market_data_service=market_data_service,
+        context_engine=context_engine,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,

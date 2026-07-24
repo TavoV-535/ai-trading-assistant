@@ -14,8 +14,9 @@ import importlib.util
 from pathlib import Path
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.context.engine import MarketContextEngine
 from app.discord.dispatch import CommandContext
-from app.event_bus import EvidenceProduced
+from app.event_bus import EvidenceProduced, MarketDataUpdated
 from app.evidence import Evidence, EvidenceCategory
 from app.plugins.base import PluginContext
 from app.reasoning.engine import ReasoningEngine
@@ -182,3 +183,70 @@ async def test_analyze_flags_conflicting_evidence(event_bus, settings):
     response = await plugin.execute(ctx)
 
     assert "conflicting signals present" in response.content
+
+
+async def test_analyze_shows_market_context_and_weighted_evidence(event_bus, settings):
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    reasoning_engine = ReasoningEngine(settings, provider=None)
+    reasoning_engine.attach(event_bus)
+    settings.context.trend_window = 6
+    settings.context.trend_bull_threshold_pct = 2.0
+    context_engine = MarketContextEngine(settings)
+    context_engine.attach(event_bus)
+
+    plugin = AnalyzePlugin(
+        PluginContext(
+            event_bus=event_bus,
+            settings=settings,
+            plugin_config={},
+            evidence_aggregator=aggregator,
+            reasoning_engine=reasoning_engine,
+            context_engine=context_engine,
+        )
+    )
+    await plugin.initialize()
+
+    # Real price data drives the Market Context Engine to derive "Bull
+    # Trend" itself -- context isn't something a command can inject, only
+    # something the engine computes from data flowing through the bus.
+    for price in (100, 101, 102, 103, 104):
+        await event_bus.publish(MarketDataUpdated(source="test", symbol="NVDA", price=price, close=price))
+    await event_bus.publish(
+        EvidenceProduced(source="EMA", evidence=_evidence("EMA", "Bullish EMA Cross", "bullish", score=20))
+    )
+    await asyncio.sleep(0.1)
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={"symbol": "nvda"})
+    response = await plugin.execute(ctx)
+
+    assert "**Market context:**" in response.content
+    assert "Bull Trend" in response.content
+    assert "Confidence Weighting Framework" in response.content
+    assert "EMA" in response.content
+
+
+async def test_analyze_without_context_engine_omits_market_context_line(event_bus, settings):
+    """context_engine defaults to None -- must degrade gracefully, never crash."""
+    aggregator = EvidenceAggregator(settings)
+    aggregator.attach(event_bus)
+    reasoning_engine = ReasoningEngine(settings, provider=None)
+    reasoning_engine.attach(event_bus)
+
+    plugin = AnalyzePlugin(
+        PluginContext(
+            event_bus=event_bus, settings=settings, plugin_config={},
+            evidence_aggregator=aggregator, reasoning_engine=reasoning_engine,
+        )
+    )
+    await plugin.initialize()
+
+    await event_bus.publish(
+        EvidenceProduced(source="EMA", evidence=_evidence("EMA", "Bullish EMA Cross", "bullish", score=20))
+    )
+    await asyncio.sleep(0.1)
+
+    ctx = CommandContext(user_id="1", guild_id=None, channel_id=None, args={"symbol": "nvda"})
+    response = await plugin.execute(ctx)
+
+    assert "**Market context:**" not in response.content

@@ -1,0 +1,3 @@
+# plugins/intelligence/earnings/config.yaml
+watchlist: ["NVDA", "AAPL", "TSLA"]
+interval_seconds: 12
