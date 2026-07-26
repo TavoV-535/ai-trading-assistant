@@ -224,6 +224,33 @@ class SimulationSection(BaseModel):
     timeline_max_per_symbol: int = 500
 
 
+class ReflectionSection(BaseModel):
+    """Tunable inputs for the Reflection Engine (``app/reflection/``).
+    ``enabled: false`` degrades gracefully (no reflections generated, no
+    error) — the same pattern ``reasoning.enabled`` already establishes."""
+
+    enabled: bool = True
+    #: Bounded per-symbol in-memory history of generated reflections (the
+    #: durable, unbounded record always remains queryable from event_log
+    #: via EventLogRepository.reflections()) — mirrors
+    #: simulation.timeline_max_per_symbol.
+    history_max_per_symbol: int = 200
+
+
+class JournalSection(BaseModel):
+    """Tunable inputs for the Trading Journal (``app/journal/``)."""
+
+    #: Bounded per-symbol in-memory entry count (durable, unbounded history
+    #: always remains queryable from event_log via
+    #: EventLogRepository.decision_records() /.reflections() /
+    #: .journal_notes()) — mirrors simulation.timeline_max_per_symbol.
+    max_entries_per_symbol: int = 500
+    #: Bounded notes retained per entry in memory — a runaway note-adding
+    #: loop (accidental or malicious) can't grow one entry's footprint
+    #: without bound. The durable record in event_log is never trimmed.
+    max_notes_per_entry: int = 50
+
+
 class ConfidenceWeightingSection(BaseModel):
     """Tunable inputs for the Confidence Weighting Framework
     (``app/aggregation/weighting.py``). ``source_reliability`` maps an
@@ -281,6 +308,8 @@ class Settings(BaseSettings):
     portfolio: PortfolioSection = Field(default_factory=PortfolioSection)
     prioritization: PrioritizationSection = Field(default_factory=PrioritizationSection)
     simulation: SimulationSection = Field(default_factory=SimulationSection)
+    reflection: ReflectionSection = Field(default_factory=ReflectionSection)
+    journal: JournalSection = Field(default_factory=JournalSection)
 
     @classmethod
     def settings_customise_sources(

@@ -35,6 +35,7 @@ class PluginRegistry:
         market_data_service: Any | None = None,
         context_engine: Any | None = None,
         portfolio_engine: Any | None = None,
+        trading_journal: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
@@ -49,6 +50,7 @@ class PluginRegistry:
         self._strategy_engine = strategy_engine
         self._context_engine = context_engine
         self._portfolio_engine = portfolio_engine
+        self._trading_journal = trading_journal
         # Mutable, not constructor-only: market data provider plugins load
         # in an earlier phase than everything else (see bootstrap.py), so
         # this starts as None and is set once the Market Data Abstraction
@@ -108,6 +110,7 @@ class PluginRegistry:
                 plugin_registry=self,
                 context_engine=self._context_engine,
                 portfolio_engine=self._portfolio_engine,
+                trading_journal=self._trading_journal,
             )
 
             try:

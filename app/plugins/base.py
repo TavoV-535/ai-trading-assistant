@@ -32,6 +32,7 @@ from app.event_bus.bus import EventBus
 if TYPE_CHECKING:
     from app.aggregation.aggregator import EvidenceAggregator
     from app.context.engine import MarketContextEngine
+    from app.journal.engine import TradingJournal
     from app.marketdata.service import MarketDataService
     from app.plugins.registry import PluginRegistry
     from app.portfolio.engine import PortfolioIntelligenceEngine
@@ -84,30 +85,36 @@ class PluginContext:
     needing to know about anything outside its own folder.
 
     ``reasoning_engine``, ``evidence_aggregator``, ``strategy_engine``,
-    ``market_data_service``, ``plugin_registry``, ``context_engine``, and
-    ``portfolio_engine`` are a deliberate, narrow exception to "plugins
-    only talk through the Event Bus." They exist so a plugin can answer an
-    on-demand, synchronous, read-only query instead of only reacting to
-    events — e.g. ``/analyze NVDA`` needs whatever the *current* evidence
-    snapshot and reasoning output are right now, not whatever the next
-    event happens to publish; a scanner plugin needs the *current* bar
-    from the Market Data Abstraction Layer on every tick, not an event to
-    react to (it's the thing that starts the event chain); ``/scan``'s
-    status report needs to see what's currently loaded; ``/analyze`` also
-    needs the Market Context Engine's *current* labels for a symbol (and
-    market-wide) to show alongside its evidence, and a symbol's *current*
-    Portfolio Intelligence Layer profile (priority score, confidence
-    trend, matched strategies) — ``/watchlist`` needs the *current* ranked
-    watchlist on demand, not just whenever the next ``SymbolProfileUpdated``
-    happens to fire. A plugin may read from these (``.snapshot()``,
-    ``.analyze()``, ``.matched_strategies_for()``, ``.fetch()``,
-    ``.plugins``, ``.ranked_watchlist()``, etc.) but must never use them to
-    mutate state, publish on another system's behalf, or reach into a
-    specific indicator plugin's internals — evidence and events remain the
-    only way to make something happen. They default to ``None`` (most unit
-    tests, and any future refactor, may not supply them), so any plugin
-    reading them must handle ``None`` gracefully instead of assuming
-    they're always present.
+    ``market_data_service``, ``plugin_registry``, ``context_engine``,
+    ``portfolio_engine``, and ``trading_journal`` are a deliberate, narrow
+    exception to "plugins only talk through the Event Bus." They exist so
+    a plugin can answer an on-demand, synchronous, read-only query instead
+    of only reacting to events — e.g. ``/analyze NVDA`` needs whatever the
+    *current* evidence snapshot and reasoning output are right now, not
+    whatever the next event happens to publish; a scanner plugin needs the
+    *current* bar from the Market Data Abstraction Layer on every tick,
+    not an event to react to (it's the thing that starts the event
+    chain); ``/scan``'s status report needs to see what's currently
+    loaded; ``/analyze`` also needs the Market Context Engine's *current*
+    labels for a symbol (and market-wide) to show alongside its evidence,
+    and a symbol's *current* Portfolio Intelligence Layer profile
+    (priority score, confidence trend, matched strategies) —
+    ``/watchlist`` needs the *current* ranked watchlist on demand, not
+    just whenever the next ``SymbolProfileUpdated`` happens to fire; and
+    (Milestone 10) ``/journal`` needs the Trading Journal's *current*
+    enriched entries for a symbol on demand. A plugin may read from these
+    (``.snapshot()``, ``.analyze()``, ``.matched_strategies_for()``,
+    ``.fetch()``, ``.plugins``, ``.ranked_watchlist()``, ``.for_symbol()``,
+    etc.) but must never use them to mutate state directly, publish on
+    another system's behalf, or reach into a specific indicator plugin's
+    internals — evidence and events remain the only way to make something
+    happen (``trading_journal.add_note()`` is the one write-shaped
+    exception, and even that only ever works by publishing a
+    ``JournalCreated`` event the Journal then reacts to itself, exactly
+    like any other subscriber — see ``app/journal/engine.py``). They
+    default to ``None`` (most unit tests, and any future refactor, may not
+    supply them), so any plugin reading them must handle ``None``
+    gracefully instead of assuming they're always present.
     """
 
     event_bus: EventBus
@@ -120,6 +127,7 @@ class PluginContext:
     plugin_registry: "PluginRegistry | None" = None
     context_engine: "MarketContextEngine | None" = None
     portfolio_engine: "PortfolioIntelligenceEngine | None" = None
+    trading_journal: "TradingJournal | None" = None
 
 
 class PluginBase(ABC):

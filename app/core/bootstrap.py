@@ -20,6 +20,7 @@ from app.db.base import Database
 from app.db.event_logger import attach_event_logger
 from app.discord.bot import TradingBot
 from app.event_bus.bus import EventBus
+from app.journal.engine import TradingJournal
 from app.logging import configure_logging, get_logger
 from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
@@ -27,7 +28,9 @@ from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
 from app.reasoning.providers.claude_provider import ClaudeProvider
+from app.reflection.engine import ReflectionEngine
 from app.strategy.engine import StrategyEngine
+from app.timeline.engine import DecisionTimeline
 
 log = get_logger(__name__)
 
@@ -116,6 +119,23 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     reasoning_engine = ReasoningEngine(settings, provider=provider)
     reasoning_engine.attach(event_bus)
 
+    # Decision Timeline + Reflection Engine + Trading Journal (Milestone
+    # 10, built on top of Milestone 9's DecisionRecorded/Decision Timeline)
+    # — attached live so /journal works immediately once any producer
+    # (today: only the Simulation Engine — see app/simulation/engine.py)
+    # publishes DecisionRecorded. Nothing publishes it from live market
+    # data yet (an honest, documented scope boundary carried over from
+    # Milestone 9, not a bug) — these three sit idle, gracefully, until a
+    # future live/paper-trading decision-recording mechanism exists, the
+    # same "wired up, waiting for a producer" pattern several other
+    # Action Registry buttons already use.
+    decision_timeline = DecisionTimeline(settings)
+    decision_timeline.attach(event_bus)
+    reflection_engine = ReflectionEngine(settings)
+    reflection_engine.attach(event_bus)
+    trading_journal = TradingJournal(settings)
+    trading_journal.attach(event_bus)
+
     # Command plugins (e.g. /analyze) may need to read the *current*
     # evidence/reasoning state synchronously, not just react to events — see
     # PluginContext's docstring for the scope of this exception.
@@ -127,6 +147,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         strategy_engine=strategy_engine,
         context_engine=context_engine,
         portfolio_engine=portfolio_engine,
+        trading_journal=trading_journal,
     )
 
     # Phase 1: market data provider plugins load first, in isolation. The
@@ -177,6 +198,9 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         context_engine=context_engine,
         portfolio_engine=portfolio_engine,
         prioritization_engine=prioritization_engine,
+        decision_timeline=decision_timeline,
+        reflection_engine=reflection_engine,
+        trading_journal=trading_journal,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,

@@ -1,5 +1,6 @@
 from app.event_bus.bus import EventBus, Subscription
 from app.event_bus.events import (
+    ACTION_DIRECTIONS,
     EVENT_TYPES,
     AlertGenerated,
     BacktestFinished,
@@ -19,6 +20,7 @@ from app.event_bus.events import (
     NewsReceived,
     PositionUpdated,
     PriceMoved,
+    ReflectionGenerated,
     RiskWarning,
     StrategyMatched,
     SymbolProfileUpdated,
@@ -55,6 +57,8 @@ __all__ = [
     "SymbolProfileUpdated",
     "AlertGenerated",
     "DecisionRecorded",
+    "ACTION_DIRECTIONS",
+    "ReflectionGenerated",
     "CommandInvoked",
     "CommandFailed",
 ]

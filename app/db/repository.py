@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import Base
 from app.db.models import EventLog
-from app.event_bus.events import DecisionRecorded, Event
+from app.event_bus.events import DecisionRecorded, Event, ReflectionGenerated
+from app.journal.models import JournalNote
 from app.logging import get_logger
+from app.reflection.models import ReflectionRecord
 from app.timeline.models import DecisionRecord
 
 ModelT = TypeVar("ModelT", bound=Base)
@@ -122,3 +124,47 @@ class EventLogRepository(Repository[EventLog]):
             if len(records) >= limit:
                 break
         return records
+
+    async def reflections(self, *, symbol: str | None = None, limit: int = 100) -> list[ReflectionRecord]:
+        """The Reflection Engine's durable, unbounded history — every
+        ``ReflectionGenerated`` event ever published, reconstructed
+        straight from its already-persisted ``event_log`` row. Mirrors
+        :meth:`decision_records` exactly — same Python-side symbol
+        filtering, same documented deferred-scope reasoning (see that
+        method's docstring)."""
+        rows = await self.recent(event_type="ReflectionGenerated", limit=max(limit * 5, limit))
+        records: list[ReflectionRecord] = []
+        for row in rows:
+            if symbol is not None and row.payload.get("symbol") != symbol:
+                continue
+            event = ReflectionGenerated.model_validate({**row.payload, "event_id": row.event_id, "timestamp": row.created_at, "source": row.source, "correlation_id": row.correlation_id})
+            records.append(ReflectionRecord.from_event(event))
+            if len(records) >= limit:
+                break
+        return records
+
+    async def journal_notes(
+        self, *, symbol: str | None = None, decision_event_id: Any | None = None, limit: int = 100
+    ) -> list[JournalNote]:
+        """The Trading Journal's durable, unbounded note/screenshot
+        history — every ``JournalCreated`` event ever published,
+        reconstructed straight from its already-persisted ``event_log``
+        row. ``decision_event_id`` (if given) further narrows to notes
+        attached to one specific decision; omitted, it returns every note
+        for ``symbol`` regardless of which decision (or none) it's
+        attached to. Mirrors :meth:`decision_records` exactly."""
+        rows = await self.recent(event_type="JournalCreated", limit=max(limit * 5, limit))
+        notes: list[JournalNote] = []
+        for row in rows:
+            if symbol is not None and row.payload.get("symbol") != symbol:
+                continue
+            if decision_event_id is not None and row.payload.get("decision_event_id") != str(decision_event_id):
+                continue
+            if not row.payload.get("note"):
+                continue
+            notes.append(
+                JournalNote(text=row.payload["note"], author=row.payload.get("author"), added_at=row.created_at)
+            )
+            if len(notes) >= limit:
+                break
+        return notes

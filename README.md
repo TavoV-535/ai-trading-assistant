@@ -10,13 +10,14 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-9 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-10 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
 `/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
 + Discord Action Registry, the External Intelligence Platform +
 Market Context Engine + Confidence Weighting Framework, the
 Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine,
-and the Unified Simulation Engine + Decision Timeline.**
+the Unified Simulation Engine + Decision Timeline, and the Unified
+Trading Journal + Reflection Engine.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -65,8 +66,17 @@ decision (context, evidence, confidence weights, matched strategies, a
 non-directive `watch_*` hypothesis label, and a retroactively resolved
 outcome) as the canonical historical record future Replay Mode,
 Journaling, AI Coach, and Explainability features will consume (Milestone
-9). See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and
-what's next.
+9); and now every resolved decision automatically gets a structured
+post-trade analysis — a new Reflection Engine (`app/reflection/`)
+publishes a `ReflectionGenerated` event (why the decision was made,
+supporting/contradictory evidence, market context, confidence evolution,
+outcome, lessons learned, potential improvements) purely from the event
+bus, and a new Trading Journal (`app/journal/`) independently enriches —
+never duplicates — the Decision Timeline's own records with that
+reflection plus user notes and screenshot placeholders, retrievable via a
+new `/journal SYMBOL` command (Milestone 10). See
+[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
+next.
 
 ## Quick start (Docker — recommended)
 
@@ -94,9 +104,13 @@ curl http://localhost:8000/watchlist
 ```
 
 In Discord, try `/ping`, `/help`, `/scan` (what the Scanner Engine is
-currently watching), `/analyze SYMBOL`, and `/watchlist` (the Portfolio
-Intelligence Layer's ranked, prioritized view of every configured symbol)
-— the reference scanner watches NVDA/AAPL/TSLA against the bundled
+currently watching), `/analyze SYMBOL`, `/watchlist` (the Portfolio
+Intelligence Layer's ranked, prioritized view of every configured symbol),
+and `/journal SYMBOL` (the Trading Journal's enriched decision history —
+empty in live mode today, since nothing yet publishes `DecisionRecorded`
+outside a Simulation Engine run; see `docs/ARCHITECTURE.md`'s "Trading
+Journal" section) — the reference scanner watches NVDA/AAPL/TSLA against
+the bundled
 synthetic-random-walk data provider by default (the same three symbols
 `portfolio.watchlist` tracks out of the box), so `/analyze NVDA` and
 `/watchlist` should both show real, continuously-generated evidence within
@@ -142,7 +156,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-377 tests, ~96% coverage of `app/` as of Milestone 9. Live Discord gateway
+429 tests, ~97% coverage of `app/` as of Milestone 10. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -169,10 +183,14 @@ app/
   context/      # Market Context Engine — derives Bull/Bear Trend, volatility, Risk-On/Off, ... (not a plugin itself)
   portfolio/    # Portfolio Intelligence Layer — per-symbol profiles + ranked priority scoring (not a plugin itself)
   prioritization/ # Event Prioritization Engine — scores/gates candidate developments into real alerts (not a plugin itself)
+  simulation/   # Unified Simulation Engine — drives the full pipeline against historical data (not a plugin itself)
+  timeline/     # Decision Timeline — canonical historical record of every recorded decision (not a plugin itself)
+  reflection/   # Reflection Engine — automatic structured post-trade analysis per resolved decision (not a plugin itself)
+  journal/      # Trading Journal — enriches Decision Timeline records with reflections/notes/screenshots (not a plugin itself)
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
-  commands/     # ping/, analyze/, scan/, watchlist/
+  commands/     # ping/, analyze/, scan/, watchlist/, journal/
   market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
   scanners/     # core/ (reference watchlist scanner)
   intelligence/ # news/, earnings/, macro/ (External Intelligence Platform reference plugins)

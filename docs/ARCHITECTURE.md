@@ -107,6 +107,14 @@ Historical Bars (ReplayProviderPlugin) ──→ Unified Simulation Engine
                                                         │
                                           DecisionRecorded (per symbol,
                                           every N bars) → Decision Timeline
+                                                        │
+                                          ┌─────────────┴─────────────┐
+                                          │                           │
+                                 Reflection Engine            Trading Journal
+                                 (ReflectionGenerated)  ──►   (independent
+                                                               subscriber)
+                                          │
+                                     /journal SYMBOL
 ```
 
 The **Unified Simulation Engine** (`app/simulation/`) is a self-contained
@@ -114,13 +122,19 @@ The **Unified Simulation Engine** (`app/simulation/`) is a self-contained
 every core engine above, loads the same plugin categories through the same
 `PluginRegistry`, and drives historical bars through them one at a time —
 there is no simulation-specific execution path anywhere downstream of
-`MarketDataUpdated`. The **Decision Timeline** (`app/timeline/`) is a new
+`MarketDataUpdated`. The **Decision Timeline** (`app/timeline/`) is a
 core system that subscribes to a new event, `DecisionRecorded` — a
 complete reasoning snapshot (context, evidence, weights, matched
 strategies, reasoning summary, a hypothesis label, and a retroactively
 resolved outcome) built by the Simulation Engine from the exact same query
-surface `/analyze` uses. See "Clock abstraction", "Unified Simulation
-Engine", and "Decision Timeline" below.
+surface `/analyze` uses. As of Milestone 10, every resolved
+`DecisionRecorded` also automatically triggers the **Reflection Engine**
+(`app/reflection/`), which publishes a structured `ReflectionGenerated`
+event, and both `DecisionRecorded` and `ReflectionGenerated` are picked up
+independently by the **Trading Journal** (`app/journal/`), which enriches
+— never duplicates — the Decision Timeline's own record. See "Clock
+abstraction", "Unified Simulation Engine", "Decision Timeline",
+"Reflection Engine", and "Trading Journal" below.
 
 ## Event Bus (`app/event_bus/`)
 
@@ -194,21 +208,26 @@ surface a plugin needs — it never reaches into core modules directly.
 
 `PluginContext` also carries `reasoning_engine`, `evidence_aggregator`,
 `strategy_engine`, `market_data_service`, `plugin_registry`,
-`context_engine` (Milestone 7), and (as of Milestone 8) `portfolio_engine`
-— all default to `None`, and all exist for exactly one narrow, documented
-reason: a plugin sometimes needs to answer an on-demand, synchronous,
-read-only query instead of only reacting to events (`/analyze NVDA` needs
-whatever the *current* evidence/reasoning/context/portfolio state is right
-now; a scanner plugin needs the *current* bar from the Market Data
-Abstraction Layer on every tick — it's the thing that starts the event
-chain, not something reacting to one; `/scan`'s status report needs to see
-what's currently loaded; `/watchlist` needs the *current* ranked watchlist
-on demand). A plugin may read from these; it may never use them to mutate
+`context_engine` (Milestone 7), `portfolio_engine` (Milestone 8), and
+(as of Milestone 10) `trading_journal` — all default to `None`, and all
+exist for exactly one narrow, documented reason: a plugin sometimes needs
+to answer an on-demand, synchronous, read-only query instead of only
+reacting to events (`/analyze NVDA` needs whatever the *current*
+evidence/reasoning/context/portfolio state is right now; a scanner plugin
+needs the *current* bar from the Market Data Abstraction Layer on every
+tick — it's the thing that starts the event chain, not something reacting
+to one; `/scan`'s status report needs to see what's currently loaded;
+`/watchlist` needs the *current* ranked watchlist on demand; `/journal`
+needs the Trading Journal's *current* enriched entries for a symbol on
+demand). A plugin may read from these; it may never use them to mutate
 state, publish on another system's behalf, or reach into a specific
 indicator plugin's internals — the Event Bus remains the only way to make
-something happen. See `PluginContext`'s docstring in `app/plugins/base.py`
-and the "Discord", "Scanner Engine", "Market Context Engine", and
-"Portfolio Intelligence Layer" sections below.
+something happen (`trading_journal.add_note()` is the one write-shaped
+exception, and even that only ever works by publishing a `JournalCreated`
+event the Journal then reacts to itself, exactly like any other
+subscriber). See `PluginContext`'s docstring in `app/plugins/base.py` and
+the "Discord", "Scanner Engine", "Market Context Engine", "Portfolio
+Intelligence Layer", and "Trading Journal" sections below.
 
 Note: `portfolio_engine` is the only exception queried by *two* different
 core systems for two different reasons — command plugins read it
@@ -755,6 +774,115 @@ database is the durable, unbounded one — the same split every other core
 engine in this codebase already has between its in-memory state and the
 event log.
 
+## Reflection Engine (`app/reflection/`)
+
+Per PROJECT.md's Milestone 10 spec: after every completed trade or
+completed simulation, automatically generate a structured post-trade
+analysis. Not a plugin — a core service, the same tier as the Decision
+Timeline. `ReflectionEngine` subscribes to `DecisionRecorded` and reflects
+only when `outcome_pending` flips to `False` — the concrete interpretation
+of "a completed trade" given no real trade execution system exists yet
+(an honest, documented scope decision, consistent with how Milestone 9
+already treats `DecisionRecorded` as the closest existing concept to "a
+trade"). It also subscribes to `SymbolProfileUpdated`, caching
+`confidence_trend` per symbol — the same cache-only pattern the Event
+Prioritization Engine already established (`app/prioritization/engine.py`)
+— never a live call into the Portfolio Intelligence Layer.
+
+For each resolved decision it splits the decision's evidence lines into
+supporting vs. contradictory by parsing them with
+`app/evidence/formatting.py::parse_evidence_line()` and comparing each
+line's direction against `ACTION_DIRECTIONS[event.simulated_action]` (the
+same constant, now public, the Simulation Engine uses to resolve
+outcomes), then derives a short, deterministic (`lessons_learned`,
+`potential_improvements`) pair — one of four branches depending on
+`no_action`/`outcome is None`/`correct`/`incorrect`/`neutral`. Generation
+is rule-based, never an AI call — the same "evidence_only"/`provider=None`
+default this codebase already uses everywhere a real model call isn't
+warranted (the Reasoning Engine's evidence-only mode, the Simulation
+Engine during a run). Clock-injected (`clock: Clock | None = None`) so a
+reflection's own timestamp stays consistent with a simulated timeline —
+deliberately not repeating the wall-clock-timestamp determinism gap
+Milestone 9 found and fixed for `AlertGenerated` and its siblings.
+
+Publishes exactly one `ReflectionGenerated` event per resolved decision,
+over the real Event Bus — the Trading Journal, a future AI Coach,
+Performance Analytics, and a future Dashboard all consume it
+independently, with no direct dependency on this engine's internals.
+Bounded per-symbol in-memory history (`reflection.history_max_per_symbol`);
+`reflection.enabled` is a graceful-degradation toggle.
+
+## Trading Journal (`app/journal/`)
+
+Per PROJECT.md's Milestone 10 spec: the platform's long-term knowledge
+base, built on top of the Decision Timeline — combining Decision Timeline
+records, strategy matches, technical/fundamental evidence, market context,
+confidence evolution, trade outcomes, user notes, screenshots (placeholder
+support), and future broker execution data. Not a plugin — a core service,
+the same tier as the Decision Timeline, Portfolio Intelligence Layer, or
+Reflection Engine.
+
+`TradingJournal` builds its own independent view purely from events —
+`DecisionRecorded`, `ReflectionGenerated`, `JournalCreated` — exactly like
+every other core engine in this codebase. It **never holds a live
+reference** to the Decision Timeline or the Reflection Engine to query
+them directly, so "no subsystem communicates directly with another" holds
+structurally, not just by convention (proved by an import-guardrail test —
+see `tests/test_milestone10_pipeline_integration.py`). `JournalEntry`
+**wraps** (never duplicates) a `DecisionRecord` and an optional
+`ReflectionRecord` — the spec's "enrich existing timeline records rather
+than duplicating them" is satisfied at the *durable storage* layer (no new
+database table; everything reconstructible from `event_log`), not by
+avoiding an in-memory copy of decision fields:
+
+- `DecisionRecorded` → creates a new `JournalEntry`, reconstructing the
+  same `DecisionRecord` `DecisionTimeline` independently builds from the
+  identical event.
+- `ReflectionGenerated` → attaches a `ReflectionRecord` to the matching
+  entry, found by `decision_event_id`. A reflection for a decision this
+  Journal instance never saw (evicted, or from a different run) is a
+  silent, honest no-op — the durable event log still has both events.
+- `JournalCreated` → appends a user note and/or a screenshot placeholder
+  to the matching entry, or — if `decision_event_id` is omitted, a valid
+  "general note about this symbol" — to a separate per-symbol
+  general-notes/general-screenshots bucket.
+
+`add_note()`/`add_screenshot()` are the Journal's only "write" surface,
+and even they never mutate state directly — they publish `JournalCreated`,
+which the engine's own `_on_journal_created` subscriber then reacts to,
+the same self-consistent event-driven pattern `DecisionTimeline` already
+uses for `DecisionRecorded`. `broker_execution` on every `JournalEntry` is
+always `None` today — a deliberate, honest placeholder for a future
+broker/paper-trading execution system (the spec's "future broker execution
+data"), never fabricated. Bounded via `journal.max_entries_per_symbol`/
+`journal.max_notes_per_entry`.
+
+Durable persistence needed no new database table: `EventLogRepository.
+reflections()` / `.journal_notes()` (`app/db/repository.py`) reconstruct
+`ReflectionRecord`/`JournalNote` objects straight from already-persisted
+`event_log` rows, mirroring `.decision_records()` exactly.
+
+Both engines are wired into live `app/core/bootstrap.py` (alongside
+`DecisionTimeline`, which as of Milestone 9 was only ever constructed
+inside `SimulationEngine.run()`) so `/journal` and future consumers work
+the moment any producer publishes `DecisionRecorded` — today, only the
+Simulation Engine does; live mode sits idle gracefully until a future
+live/paper-trading decision-recording mechanism exists, the same honest,
+carried-over Milestone 9 scope boundary. `SimulationEngine.run()`
+constructs its own clock-injected `ReflectionEngine`/`TradingJournal`
+instances alongside its `DecisionTimeline` and returns them on
+`SimulationResult`, so a caller (a test, `/journal`, a future comparison
+UI) can query a simulation's complete, enriched history exactly like it
+queries live state.
+
+`/journal SYMBOL [note]` (`plugins/commands/journal/`) is the Discord
+surface: no `note` renders the enriched history (decision + reflection +
+notes/screenshots) for a symbol; a `note` appends it via `add_note()`
+against the symbol's most recent entry (or as a general note). Reads
+`context.trading_journal` directly — the same documented, narrow,
+read-only `PluginContext` exception `/analyze` and `/watchlist` already
+use.
+
 ## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
 
 A strategy is **pure declarative YAML**, never Python — `plugins/strategies/
@@ -956,7 +1084,21 @@ commands, not `/analyze`-specific. `plugins/commands/watchlist/`
 priority first, with its evidence counts, matched strategies, active
 context, alert history, and full score breakdown — the proactive
 counterpart to `/analyze`'s on-demand, single-symbol view. Same Action
-Registry (Refresh / Dismiss) as `/scan`.
+Registry (Refresh / Dismiss) as `/scan`. `plugins/commands/journal/`
+(`/journal SYMBOL [note]`, Milestone 10) — one required `symbol` option,
+one optional `note` option, reads `context.trading_journal` directly (the
+documented `PluginContext` exception above). No `note`: renders every
+`JournalEntry` for the symbol — decision (action, confidence, outcome),
+reflection (reasoning, supporting/contradictory evidence, confidence
+evolution, lessons learned, potential improvements), attached notes/
+screenshot counts — plus any general (non-decision-specific) notes. A
+`note`: calls `trading_journal.add_note()` against the symbol's most
+recent entry (or as a general note if none exists), confirming
+ephemerally. Same Action Registry (Refresh / Dismiss) as `/scan` and
+`/watchlist`; the pre-existing Action Registry "journal" *button* (on
+`/analyze`'s response) still intentionally uses the generic placeholder —
+button handlers receive `(interaction, target)` only, no `PluginContext`
+— so `/journal` is the supported way to reach the Journal today.
 
 **Proactive alert delivery (Milestone 8).** `AlertGenerated` is the one
 event type in the platform meant to reach the user unprompted — everything

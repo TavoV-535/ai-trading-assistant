@@ -19,11 +19,13 @@ from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import AlertGenerated
+from app.journal.engine import TradingJournal
 from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
+from app.reflection.engine import ReflectionEngine
 from app.strategy.engine import StrategyEngine
 from app.timeline.engine import DecisionTimeline
 
@@ -78,6 +80,8 @@ class SimulationResult:
     portfolio_engine: PortfolioIntelligenceEngine
     prioritization_engine: EventPrioritizationEngine
     decision_timeline: DecisionTimeline
+    reflection_engine: ReflectionEngine
+    trading_journal: TradingJournal
     plugin_registry: PluginRegistry
     market_data_service: MarketDataService
     alerts: list[AlertGenerated] = field(default_factory=list)

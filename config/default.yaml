@@ -202,3 +202,22 @@ simulation:
   # deterministic seed (plugins/market_data/replay/config.yaml) -- the
   # Simulation Engine deliberately introduces no second seeding mechanism,
   # it just uses market_data.providers the same way live operation does.
+
+reflection:
+  # The Reflection Engine (app/reflection/) -- generates a structured
+  # post-decision analysis automatically the moment a DecisionRecorded's
+  # outcome resolves. false degrades gracefully (no reflections, no error),
+  # the same pattern reasoning.enabled already establishes.
+  enabled: true
+  # Bounded per-symbol in-memory history -- the durable, unbounded record
+  # always remains queryable from event_log via EventLogRepository.reflections().
+  history_max_per_symbol: 200
+
+journal:
+  # The Trading Journal (app/journal/) -- enriches Decision Timeline
+  # records with reflections, user notes, and screenshot placeholders
+  # rather than duplicating their content.
+  max_entries_per_symbol: 500
+  # Bounded notes retained per entry in memory -- the durable record in
+  # event_log is never trimmed.
+  max_notes_per_entry: 50

@@ -185,9 +185,29 @@ class BacktestFinished(Event):
 
 
 class JournalCreated(Event):
-    trade_id: UUID | None = None
+    """Published by the Trading Journal (``app/journal/``) whenever a user
+    adds a note or a screenshot placeholder to a journal entry — the
+    durable record of *manual* journal activity, complementing
+    ``DecisionRecorded`` (automatic, from a simulation) and
+    ``ReflectionGenerated`` (automatic, from the Reflection Engine).
+
+    ``decision_event_id`` links this note to the ``DecisionRecorded`` it
+    enriches, when the note is about a specific recorded decision rather
+    than a symbol generally (``None`` is a valid, honest "general note").
+    ``trade_id`` is a deliberate placeholder for a future broker execution
+    system (Milestone 10's spec explicitly asks the Journal to be capable
+    of combining "future broker execution data" without that system
+    existing yet) — always ``None`` today."""
+
     symbol: str | None = None
+    decision_event_id: UUID | None = None
+    trade_id: UUID | None = None
     note: str | None = None
+    author: str | None = None
+    #: Placeholder support only, per the Milestone 10 spec — a URL or path
+    #: string, never actual image bytes/upload handling (that's a real,
+    #: separate future capability, not faked here).
+    screenshot_url: str | None = None
 
 
 class DailySummary(Event):
@@ -413,6 +433,84 @@ class DecisionRecorded(Event):
     outcome_pending: bool = True
 
 
+#: ``DecisionRecorded.simulated_action`` -> the direction it implies, for
+#: outcome resolution (``app/simulation/engine.py``) and for splitting a
+#: decision's evidence into "supporting" vs. "contradictory" (the
+#: Reflection Engine, ``app/reflection/engine.py``). Lives here, not in
+#: either consumer's module, because it's fundamentally part of
+#: ``DecisionRecorded``'s own vocabulary — what a ``simulated_action``
+#: value *means* — not implementation detail private to whichever engine
+#: happens to read it first. ``"no_action"`` deliberately maps to nothing
+#: (absent from this dict) — there's no directional claim to compare
+#: anything against.
+ACTION_DIRECTIONS: dict[str, str] = {
+    "watch_bullish": "bullish",
+    "watch_bearish": "bearish",
+    "watch_neutral": "neutral",
+}
+
+
+class ReflectionGenerated(Event):
+    """Published by the Reflection Engine (``app/reflection/``) — a
+    structured post-decision analysis generated automatically the moment
+    a ``DecisionRecorded``'s outcome resolves (``outcome_pending`` flips to
+    ``False``), whether that's a real directional correct/incorrect/
+    neutral verdict or an honest "no evidence existed" for a ``no_action``
+    decision. Exactly one reflection per resolved decision.
+
+    Built entirely from the ``DecisionRecorded`` event that triggered it
+    plus this engine's own cached ``SymbolProfileUpdated.confidence_trend``
+    (the same cache-only pattern the Event Prioritization Engine already
+    uses — see ``app/prioritization/engine.py``) — never by reaching into
+    the Evidence Aggregator, Reasoning Engine, or Portfolio Intelligence
+    Layer directly. This is what lets the Journal, a future AI Coach,
+    Performance Analytics, and a future Dashboard all consume reflections
+    independently, purely through the Event Bus, with no direct dependency
+    on the Reflection Engine's internals.
+
+    Generation is deterministic and rule-based by default (no AI provider
+    call) — the same "graceful, honest, zero-external-dependency default"
+    convention the Reasoning Engine's ``evidence_only`` mode and the
+    Simulation Engine's ``provider=None`` already establish."""
+
+    symbol: str
+    #: The ``DecisionRecorded`` this reflection is about — how the Journal
+    #: (``app/journal/``) attaches a reflection to the right entry without
+    #: the Reflection Engine needing to know the Journal exists.
+    decision_event_id: UUID
+    #: Echoes ``DecisionRecorded.reasoning_summary`` — "why the decision
+    #: was made," in the reasoning system's own words, not re-derived.
+    reasoning: str = ""
+    #: Technical/fundamental evidence lines (same formatted-string
+    #: convention as ``DecisionRecorded.technical_evidence`` — see
+    #: ``app/evidence/formatting.py``) whose parsed direction agrees with
+    #: ``simulated_action``'s implied direction.
+    supporting_evidence: list[str] = Field(default_factory=list)
+    #: The same, but whose direction disagrees — the case *against* the
+    #: decision that was made anyway, made visible rather than hidden.
+    contradictory_evidence: list[str] = Field(default_factory=list)
+    market_context: dict[str, str] = Field(default_factory=dict)
+    confidence: float = Field(default=0.0, ge=0.0, le=100.0)
+    #: This symbol's Portfolio Intelligence Layer confidence trend
+    #: ("rising"/"falling"/"stable"/"unknown") at the moment this
+    #: reflection was generated — cached from ``SymbolProfileUpdated``,
+    #: never queried live.
+    confidence_evolution: str = "unknown"
+    simulated_action: str = "no_action"
+    outcome: str | None = None
+    outcome_price_change_pct: float | None = None
+    #: A short, deterministic, rule-based takeaway — never a hindsight
+    #: trading directive ("should have bought") — framed as an honest
+    #: observation about the evidence and outcome.
+    lessons_learned: str = ""
+    #: A short, deterministic, rule-based suggestion for what could sharpen
+    #: future analysis of similar setups — e.g. "the contradictory OBV
+    #: signal was outweighed; consider whether volume-based evidence
+    #: deserves more weight in Bear Trend regimes." Always a hypothesis
+    #: to consider, never a directive.
+    potential_improvements: str = ""
+
+
 EVENT_TYPES: dict[str, type[Event]] = {
     cls.__name__: cls
     for cls in (
@@ -437,6 +535,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         SymbolProfileUpdated,
         AlertGenerated,
         DecisionRecorded,
+        ReflectionGenerated,
         CommandInvoked,
         CommandFailed,
     )

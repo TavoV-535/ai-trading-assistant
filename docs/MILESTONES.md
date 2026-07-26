@@ -645,6 +645,160 @@ a silent assumption.
   way it would reflect live ones (see the Milestone 9 completion report for
   the transcript).
 
+## Milestone 10 — Unified Trading Journal + Reflection Engine ✅ complete
+
+- **`ACTION_DIRECTIONS`** (`app/event_bus/events.py`) — promoted out of a
+  private `_ACTION_DIRECTIONS` duplicate in `app/simulation/engine.py` to a
+  public constant (`{"watch_bullish": "bullish", "watch_bearish": "bearish",
+  "watch_neutral": "neutral"}`, deliberately omitting `"no_action"`), since
+  it's part of `DecisionRecorded`'s own vocabulary and is now needed by both
+  the Simulation Engine (outcome resolution) and the new Reflection Engine
+  (splitting evidence into supporting vs. contradictory).
+- **Evidence-line text convention** (`app/evidence/formatting.py`, new
+  module) — `format_evidence_line(evidence) -> str` (`"{source}: {title}
+  ({direction}, {confidence:.0f}/100)"`) and its inverse,
+  `parse_evidence_line(line) -> EvidenceLineParts | None` (a regex-backed
+  parser that returns `None` — never raises — on anything that doesn't match
+  the convention exactly). One shared implementation between the code that
+  *builds* `DecisionRecorded.technical_evidence`/`fundamental_evidence`
+  (the Simulation Engine) and the code that *reads* it back (the Reflection
+  Engine, which only ever sees the `DecisionRecorded` event on the bus, by
+  design — never a live reference to the Evidence Aggregator's original
+  `Evidence` objects).
+- **`ReflectionGenerated`** (`app/event_bus/events.py`) — a new immutable
+  event published by the Reflection Engine, one per resolved
+  `DecisionRecorded`: `symbol`, `decision_event_id` (links back to the
+  triggering decision), `reasoning`, `supporting_evidence`/
+  `contradictory_evidence` (evidence lines split by direction agreement),
+  `market_context`, `confidence`, `confidence_evolution`
+  (rising/falling/stable/unknown), `simulated_action`, `outcome`/
+  `outcome_price_change_pct`, and `lessons_learned`/`potential_improvements`
+  — every field the Milestone 10 spec's post-trade analysis asks for.
+- **`JournalCreated`** (`app/event_bus/events.py`) — repurposed from an
+  unused Milestone 1 scaffolding event (already named in `PROJECT.md`'s
+  original example event list) rather than inventing a new name: `symbol`,
+  `decision_event_id` (`None` is a valid, honest "general note about this
+  symbol"), `trade_id` (a deliberate placeholder for a future broker
+  execution system, always `None` today), `note`, `author`,
+  `screenshot_url` (placeholder support only — a URL/path string, no image
+  upload handling).
+- **Reflection Engine** (`app/reflection/`, new core module, not a plugin)
+  — `ReflectionEngine` subscribes to `DecisionRecorded` and reflects only
+  when `outcome_pending is False` (the concrete interpretation of "a
+  completed trade or completed simulation," since no real trade execution
+  system exists yet), plus `SymbolProfileUpdated` to cache
+  `confidence_trend` per symbol (the same cache-only pattern the Event
+  Prioritization Engine already established — never a live call into the
+  Portfolio Intelligence Layer). Generation is deterministic and rule-based
+  (`_split_evidence()`, `_build_lessons()`) — never an AI call, the same
+  "evidence_only"/`provider=None` default this codebase already uses
+  everywhere a real model call isn't warranted. Clock-injected
+  (`clock: Clock | None = None`) so a reflection's timestamp stays
+  consistent with a simulated timeline — deliberately not repeating the
+  wall-clock-timestamp determinism bug Milestone 9 found and fixed.
+  Bounded per-symbol in-memory history
+  (`reflection.history_max_per_symbol`), query surface `for_symbol()`/
+  `all()`/`symbols()`/`total_generated`, `reflection.enabled` toggle for
+  graceful degradation.
+- **Trading Journal** (`app/journal/`, new core module, not a plugin) —
+  `TradingJournal` subscribes independently to `DecisionRecorded`,
+  `ReflectionGenerated`, and `JournalCreated`; it never holds a live
+  reference to `DecisionTimeline` or `ReflectionEngine` objects, so "no
+  subsystem communicates directly with another" holds structurally, not
+  just by convention (see the import-guardrail test below).
+  `JournalEntry` **wraps** (never duplicates) a `DecisionRecord` plus an
+  optional `ReflectionRecord`, additive `notes`/`screenshots` (placeholder
+  URLs), and `broker_execution` (always `None` today — an honest
+  placeholder for the spec's "future broker execution data," never
+  fabricated). `add_note()`/`add_screenshot()` only ever mutate state by
+  publishing `JournalCreated`, which the engine's own `_on_journal_created`
+  subscriber then reacts to — the same self-consistent event-driven pattern
+  `DecisionTimeline` already uses for `DecisionRecorded`. Notes/screenshots
+  without a matching `decision_event_id` go into per-symbol general-notes/
+  general-screenshots buckets. Bounded via `journal.max_entries_per_symbol`/
+  `journal.max_notes_per_entry`. Query surface: `get()`, `for_symbol()`,
+  `all()`, `symbols()`, `general_notes_for()`, `general_screenshots_for()`,
+  `total_entries`.
+- **`EventLogRepository.reflections()` / `.journal_notes()`**
+  (`app/db/repository.py`) — mirror `decision_records()` exactly:
+  reconstruct `ReflectionRecord`/`JournalNote` objects straight from
+  already-persisted `event_log` rows, Python-side symbol filtering, no
+  dedicated table, no raw/dialect SQL.
+- **Live + Simulation wiring** — `DecisionTimeline`, `ReflectionEngine`, and
+  `TradingJournal` are now constructed and attached inside live
+  `app/core/bootstrap.py` (previously, per Milestone 9,
+  `DecisionTimeline` was only ever constructed inside
+  `SimulationEngine.run()`) — so `/journal` and future consumers work the
+  moment any producer publishes `DecisionRecorded`. Documented as sitting
+  idle gracefully in live mode today, since nothing publishes
+  `DecisionRecorded` from live market data yet — the same honest,
+  carried-over Milestone 9 scope boundary, not a bug.
+  `SimulationEngine.run()` constructs its own clock-injected
+  `ReflectionEngine`/`TradingJournal` instances alongside its
+  `DecisionTimeline`, attaches them to the run's isolated `EventBus`, and
+  returns them on `SimulationResult`.
+- **`PluginContext.trading_journal`** (`app/plugins/base.py`) — a new
+  `TradingJournal | None` field, the same documented, narrow, read-only-
+  query exception pattern as `portfolio_engine`/`context_engine`/etc. Its
+  one "write" capability (`add_note()`) still only works by publishing an
+  event the engine reacts to itself, preserving the event-only mutation
+  rule.
+- **`/journal SYMBOL [note]`** (`plugins/commands/journal/`) — read mode
+  (no `note`) renders the Trading Journal's enriched history for a symbol:
+  every entry's decision (action, confidence, outcome), its reflection
+  (reasoning, supporting/contradictory evidence, confidence evolution,
+  lessons learned, potential improvements), attached notes/screenshot
+  counts, and any general (non-decision-specific) notes/screenshots. Write
+  mode (`note` given) calls `trading_journal.add_note()` against the
+  symbol's most recent entry, or as a general note if none exists yet —
+  either way only ever mutating state by publishing `JournalCreated`. The
+  pre-existing Action Registry "journal" button placeholder is
+  deliberately left as-is: a button handler only receives
+  `(interaction, target)`, no `PluginContext`, so wiring it would need a
+  larger structural change this milestone's spec didn't ask for — `/journal`
+  is the supported way to reach the Journal today.
+- **`ReflectionSection`/`JournalSection` config**
+  (`app/config/settings.py`, `config/default.yaml`) —
+  `reflection.enabled`, `reflection.history_max_per_symbol`,
+  `journal.max_entries_per_symbol`, `journal.max_notes_per_entry`.
+- 68 new tests: 6 evidence-line formatting round-trip/malformed-input
+  (`tests/test_evidence_formatting.py`), 14 Reflection Engine
+  (`tests/test_reflection_engine.py` — supporting/contradictory split, all
+  four `_build_lessons` branches, confidence-trend caching, bounded
+  history, `enabled=False` graceful no-op, clock injection), 16 Trading
+  Journal (`tests/test_trading_journal.py` — entry creation, reflection
+  attachment by `decision_event_id`, matched-vs-general note/screenshot
+  routing, bounded eviction, clock injection), 2 new
+  `EventLogRepository.reflections()`/`.journal_notes()` durable-
+  reconstruction tests (`tests/test_db.py`), and 5 full Milestone 10
+  pipeline integration tests
+  (`tests/test_milestone10_pipeline_integration.py`) — a completed
+  simulation automatically generating enriched journal records,
+  `ReflectionGenerated` actually observed flowing over the real Event Bus
+  by two independent subscribers, `/journal` retrieving a complete
+  historical record (read + note-write round trip) via the real,
+  unmodified `JournalPlugin`, an import-guardrail test proving the
+  Reflection Engine and Trading Journal never import each other's `engine`
+  module or `app.timeline.engine`/`app.simulation` directly (only each
+  other's plain-data `models` modules), and a two-independent-runs
+  determinism check extended to reflections and journal entries. One
+  pre-existing test (`test_bot_registers_help_ping_analyze_and_scan_commands`)
+  updated to expect the new `journal` command alongside the existing four.
+  429 tests passing total, 97% coverage of `app/` (94% on the Milestone
+  10 modules specifically — `app/reflection/`, `app/journal/`,
+  `app/evidence/formatting.py`, and `plugins/commands/journal/`), ruff
+  clean.
+- Live-verified end to end: a real `SimulationEngine.run()` over 40-60
+  simulated bars for NVDA produces resolved `DecisionRecorded` events, each
+  automatically followed by a `ReflectionGenerated` event over the real
+  Event Bus and an enriched `JournalEntry` (decision + reflection) with no
+  direct call between the two new engines; `/journal NVDA` — via the real,
+  unmodified `JournalPlugin` — renders the complete history including
+  reasoning, supporting/contradictory evidence, lessons learned, and
+  potential improvements, and a follow-up `/journal NVDA note:"..."` note
+  round-trips through `JournalCreated` and appears on the next read (see
+  the Milestone 10 completion report for the transcript).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
@@ -658,21 +812,32 @@ open to reordering based on what you want to see working first:
    blocker for anything else. A real News/Earnings/Macro provider (a real
    API instead of the synthetic reference plugins) is the same story for
    `settings.intelligence`-driven plugins.
-2. **Backtesting**, then **Journaling**, **Risk Engine**, **AI Coach**,
-   **Replay Mode**, **Optimization Engine**, **Personal Statistics** —
-   roughly in that order, since each leans on the ones before it
-   (backtesting needs strategies + indicators; the coach needs journaling;
-   risk warnings need trade events already flowing). These are also what
-   would give the Action Registry's Chart / News / History / Backtest /
-   Journal / Watch / Replay / Coach actions real behavior instead of a
-   placeholder reply — each is a single `ACTION_REGISTRY.register_handler()`
-   call once the backing system exists. (`Watch` already has a real system
-   behind it as of Milestone 8 — `/watchlist` — though the button itself
-   still needs its handler wired up.)
+2. **AI Coach**, then **Risk Engine**, **Replay Mode**, **Optimization
+   Engine**, **Personal Statistics** — roughly in that order. The Trading
+   Journal and Reflection Engine (Milestone 10) already give the AI Coach
+   its entire input surface (`ReflectionGenerated`'s lessons_learned/
+   potential_improvements, the Journal's enriched per-symbol history) — the
+   Coach becomes a new subscriber to events that already flow, not a new
+   data pipeline. These are also what would give the Action Registry's
+   Chart / News / History / Backtest / Watch / Replay / Coach actions real
+   behavior instead of a placeholder reply — each is a single
+   `ACTION_REGISTRY.register_handler()` call once the backing system
+   exists. (`Watch` already has a real system behind it as of Milestone 8
+   — `/watchlist`; `Journal` already has a real command — `/journal` — as
+   of Milestone 10, though the pre-existing Action Registry *button*
+   itself still intentionally uses the placeholder, since button handlers
+   don't receive a `PluginContext` — see `plugins/commands/journal/plugin.py`'s
+   docstring.)
 3. **More External Intelligence Platform sources** — SEC filings, insider
    activity, FDA approvals, M&A, buybacks, dividends, stock splits — each
    is a new folder under `plugins/intelligence/` against the same
    `IntelligencePlugin` contract Milestone 7 established, no core changes.
+4. **Real broker execution / paper trading** — the honest placeholder this
+   milestone left in place (`JournalCreated.trade_id`,
+   `JournalEntry.broker_execution`, always `None` today) becomes real, and
+   "a completed trade" in the Reflection Engine's trigger condition
+   (currently a resolved `DecisionRecorded`) can be redefined against an
+   actual filled order.
 
 Say the word and the next milestone starts. Nothing here commits to a
 specific order — just say which one you want first.

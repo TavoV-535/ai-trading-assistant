@@ -82,29 +82,23 @@ from app.aggregation.models import AggregateSnapshot
 from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
 from app.event_bus.bus import EventBus
-from app.event_bus.events import AlertGenerated, DecisionRecorded, MarketDataUpdated
+from app.event_bus.events import ACTION_DIRECTIONS, AlertGenerated, DecisionRecorded, MarketDataUpdated
+from app.evidence.formatting import format_evidence_line
 from app.evidence.schema import FUNDAMENTAL_CATEGORIES
 from app.intelligence.plugin import IntelligencePlugin
+from app.journal.engine import TradingJournal
 from app.logging import get_logger
 from app.marketdata.service import MarketDataService
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine, ReasoningOutput
+from app.reflection.engine import ReflectionEngine
 from app.simulation.config import SimulationConfig, SimulationResult
 from app.strategy.engine import StrategyEngine
 from app.timeline.engine import DecisionTimeline
 
 log = get_logger(__name__)
-
-#: simulated_action -> the direction it implies, for outcome resolution.
-#: "no_action" deliberately maps to None -- there's no directional claim
-#: to grade an outcome against.
-_ACTION_DIRECTIONS: dict[str, str] = {
-    "watch_bullish": "bullish",
-    "watch_bearish": "bearish",
-    "watch_neutral": "neutral",
-}
 
 
 @dataclass
@@ -173,6 +167,16 @@ class SimulationEngine:
         reasoning_engine.attach(event_bus)
         decision_timeline = DecisionTimeline(settings)
         decision_timeline.attach(event_bus)
+        # Reflection Engine + Trading Journal (Milestone 10) -- clock-injected
+        # exactly like Decision Timeline's sibling engines above, so every
+        # ReflectionGenerated/JournalCreated timestamp stays consistent with
+        # the simulated timeline instead of drifting to real wall-clock time
+        # (the same determinism gap Milestone 9 found and fixed elsewhere in
+        # this file -- see the module docstring's "Determinism" section).
+        reflection_engine = ReflectionEngine(settings, clock=clock)
+        reflection_engine.attach(event_bus)
+        trading_journal = TradingJournal(settings, clock=clock)
+        trading_journal.attach(event_bus)
 
         alerts: list[AlertGenerated] = []
 
@@ -189,6 +193,7 @@ class SimulationEngine:
             strategy_engine=strategy_engine,
             context_engine=context_engine,
             portfolio_engine=portfolio_engine,
+            trading_journal=trading_journal,
         )
         # Phase 1, exactly like app.core.bootstrap: market data providers
         # first, so the Market Data Abstraction Layer can be built from them.
@@ -321,6 +326,8 @@ class SimulationEngine:
             portfolio_engine=portfolio_engine,
             prioritization_engine=prioritization_engine,
             decision_timeline=decision_timeline,
+            reflection_engine=reflection_engine,
+            trading_journal=trading_journal,
             plugin_registry=plugin_registry,
             market_data_service=market_data_service,
             alerts=alerts,
@@ -367,7 +374,7 @@ class SimulationEngine:
         technical: list[str] = []
         fundamental: list[str] = []
         for item in snapshot.active_evidence:
-            line = f"{item.source}: {item.title} ({item.direction}, {item.confidence:.0f}/100)"
+            line = format_evidence_line(item)
             (fundamental if item.category in FUNDAMENTAL_CATEGORIES else technical).append(line)
 
         confidence_weights = {f"{w.evidence.source}:{w.evidence.title}": round(w.weight, 4) for w in snapshot.weighted_evidence}
@@ -436,7 +443,7 @@ def _resolve_outcome(pending: _PendingDecision, prices: list[float], neutral_ban
     direction to grade, so they resolve to ``outcome=None`` immediately
     (not "pending" — there's nothing left to wait for)."""
     event = pending.event
-    direction = _ACTION_DIRECTIONS.get(event.simulated_action)
+    direction = ACTION_DIRECTIONS.get(event.simulated_action)
     if direction is None or not pending.entry_price:
         return event.model_copy(update={"outcome": None, "outcome_price_change_pct": None, "outcome_pending": False})
 
