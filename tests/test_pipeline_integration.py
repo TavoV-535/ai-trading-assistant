@@ -168,7 +168,7 @@ def test_strategy_engine_only_imports_generic_modules():
     import app.strategy.engine as engine_module
     import app.strategy.compiler as compiler_module
 
-    allowed_prefixes = ("app.event_bus", "app.strategy", "app.logging", "app.evidence")
+    allowed_prefixes = ("app.event_bus", "app.strategy", "app.logging", "app.evidence", "app.core.clock")
     for module in (engine_module, compiler_module):
         tree = ast.parse(Path(module.__file__).read_text())
         for node in ast.walk(tree):

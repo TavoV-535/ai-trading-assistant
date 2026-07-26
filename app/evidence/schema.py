@@ -44,6 +44,15 @@ class EvidenceCategory:
     HISTORICAL = "Historical Patterns"
 
 
+#: Evidence categories treated as "external intelligence" rather than
+#: technical analysis -- matches the categories the reference News/
+#: Earnings/Macro plugins publish (see plugins/intelligence/). Shared by
+#: the Portfolio Intelligence Layer (fundamental-freshness scoring) and
+#: the Decision Timeline (splitting a decision's evidence into technical
+#: vs. fundamental sections) so both read the exact same classification.
+FUNDAMENTAL_CATEGORIES = {EvidenceCategory.NEWS, EvidenceCategory.EARNINGS, EvidenceCategory.MACRO}
+
+
 class Evidence(BaseModel):
     """A single, self-contained observation from one plugin.
 

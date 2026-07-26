@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.evidence import Evidence, EvidenceCategory
+from app.evidence import FUNDAMENTAL_CATEGORIES, Evidence, EvidenceCategory
 
 
 def test_valid_evidence_matches_spec_example():
@@ -38,6 +38,15 @@ def test_evidence_is_immutable():
     e = Evidence(source="EMA", category="Trend", title="x", score=1, confidence=50, direction="neutral")
     with pytest.raises(Exception):
         e.score = 99
+
+
+def test_fundamental_categories_covers_news_earnings_macro_only():
+    # Shared by the Portfolio Intelligence Layer (Milestone 8) and the
+    # Simulation Engine / Decision Timeline (Milestone 9) -- one
+    # classification, not two private duplicates.
+    assert FUNDAMENTAL_CATEGORIES == {EvidenceCategory.NEWS, EvidenceCategory.EARNINGS, EvidenceCategory.MACRO}
+    assert EvidenceCategory.TREND not in FUNDAMENTAL_CATEGORIES
+    assert EvidenceCategory.MOMENTUM not in FUNDAMENTAL_CATEGORIES
 
 
 def test_evidence_rejects_unknown_fields():

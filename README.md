@@ -10,12 +10,13 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-8 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-9 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
 `/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
 + Discord Action Registry, the External Intelligence Platform +
-Market Context Engine + Confidence Weighting Framework, and the
-Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine.**
+Market Context Engine + Confidence Weighting Framework, the
+Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine,
+and the Unified Simulation Engine + Decision Timeline.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -55,9 +56,17 @@ configured watchlist symbol and ranks them by a transparent priority score
 every candidate development for importance, novelty, confidence change,
 urgency, and user relevance before deciding whether it's worth a real,
 duplicate-suppressed Discord alert — reducing notification fatigue without
-missing what actually matters (Milestone 8). See
-[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
-next.
+missing what actually matters (Milestone 8); and now a Unified Simulation
+Engine (`app/simulation/`) can drive the exact same pipeline — every
+engine, every event, no shortcuts — against historical data instead of
+live data, deterministically, while a new Decision Timeline
+(`app/timeline/`) records the complete reasoning behind every simulated
+decision (context, evidence, confidence weights, matched strategies, a
+non-directive `watch_*` hypothesis label, and a retroactively resolved
+outcome) as the canonical historical record future Replay Mode,
+Journaling, AI Coach, and Explainability features will consume (Milestone
+9). See [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and
+what's next.
 
 ## Quick start (Docker — recommended)
 
@@ -133,7 +142,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-325 tests, ~96% coverage of `app/` as of Milestone 8. Live Discord gateway
+377 tests, ~96% coverage of `app/` as of Milestone 9. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.

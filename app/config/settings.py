@@ -185,6 +185,45 @@ class PrioritizationSection(BaseModel):
     decision_log_size: int = 20
 
 
+class SimulationSection(BaseModel):
+    """Tunable inputs for the Unified Simulation Engine (``app/simulation/``)
+    and the Decision Timeline (``app/timeline/``). ``pace: "instant"`` (the
+    default) replays bars back-to-back with no delay — Historical
+    Backtesting / Parameter Optimization / Strategy Comparison speed.
+    ``pace: "realtime"`` sleeps ``bar_interval_seconds`` between bars — a
+    human-watchable Replay Mode speed. Both paths publish the exact same
+    events through the exact same engines; only the pacing differs."""
+
+    default_bar_count: int = 200
+    default_timeframe: str = "1m"
+    #: Simulated wall-clock time advanced per bar (independent of how fast
+    #: the bar is actually processed) -- what makes freshness/decay/
+    #: cooldown math reproducible regardless of real execution speed.
+    bar_interval_seconds: float = 60.0
+    pace: str = "instant"  # "instant" | "realtime"
+    #: How often (in bars) the Simulation Engine records a decision per
+    #: watched symbol.
+    decision_interval_bars: int = 5
+    #: How many further bars must elapse before a recorded decision's
+    #: outcome (did subsequent price action agree with its direction) is
+    #: resolved.
+    lookahead_bars: int = 10
+    #: Price moves smaller than this (as a percent) resolve to a "neutral"
+    #: outcome rather than "correct"/"incorrect" -- avoids over-crediting
+    #: noise-level moves as a directional win or loss.
+    outcome_neutral_band_pct: float = 0.05
+    #: Whether the Simulation Engine also drives the configured
+    #: intelligence plugins (News/Earnings/Macro) by calling their
+    #: poll_once() directly (deterministic -- see app/intelligence/plugin.py)
+    #: on a fixed simulated cadence, rather than only technical evidence.
+    include_intelligence: bool = True
+    intelligence_poll_interval_bars: int = 5
+    #: Bounded per-symbol in-memory history kept by DecisionTimeline (the
+    #: durable, unbounded record always remains queryable from event_log
+    #: via EventLogRepository.decision_records()).
+    timeline_max_per_symbol: int = 500
+
+
 class ConfidenceWeightingSection(BaseModel):
     """Tunable inputs for the Confidence Weighting Framework
     (``app/aggregation/weighting.py``). ``source_reliability`` maps an
@@ -241,6 +280,7 @@ class Settings(BaseSettings):
     confidence_weighting: ConfidenceWeightingSection = Field(default_factory=ConfidenceWeightingSection)
     portfolio: PortfolioSection = Field(default_factory=PortfolioSection)
     prioritization: PrioritizationSection = Field(default_factory=PrioritizationSection)
+    simulation: SimulationSection = Field(default_factory=SimulationSection)
 
     @classmethod
     def settings_customise_sources(

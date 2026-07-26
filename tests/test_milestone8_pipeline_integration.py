@@ -173,7 +173,7 @@ def test_portfolio_engine_only_imports_generic_modules():
 
     import app.portfolio.engine as portfolio_module
 
-    allowed_prefixes = ("app.event_bus", "app.portfolio", "app.logging")
+    allowed_prefixes = ("app.event_bus", "app.portfolio", "app.logging", "app.core.clock", "app.evidence")
     tree = ast.parse(Path(portfolio_module.__file__).read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("app."):
@@ -191,7 +191,7 @@ def test_prioritization_engine_only_imports_generic_modules():
 
     import app.prioritization.engine as prioritization_module
 
-    allowed_prefixes = ("app.event_bus", "app.prioritization", "app.logging")
+    allowed_prefixes = ("app.event_bus", "app.prioritization", "app.logging", "app.core.clock")
     tree = ast.parse(Path(prioritization_module.__file__).read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("app."):

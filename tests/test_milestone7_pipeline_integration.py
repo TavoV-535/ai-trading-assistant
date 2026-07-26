@@ -157,7 +157,7 @@ def test_context_engine_only_imports_generic_modules():
 
     import app.context.engine as context_module
 
-    allowed_prefixes = ("app.event_bus", "app.context", "app.logging")
+    allowed_prefixes = ("app.event_bus", "app.context", "app.logging", "app.core.clock")
     tree = ast.parse(Path(context_module.__file__).read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("app."):

@@ -41,21 +41,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from app.aggregation.models import AggregateSnapshot, EnrichmentInfo
 from app.aggregation.weighting import ConfidenceWeightingConfig, compute_weight
+from app.core.clock import Clock, SystemClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import EvidenceAggregated, EvidenceProduced, MarketContextUpdated, WeightedEvidenceEvent
 from app.evidence.schema import Evidence
 from app.logging import get_logger
 
 log = get_logger(__name__)
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -78,6 +75,7 @@ class EvidenceAggregator:
         *,
         freshness_window_seconds: float | None = None,
         max_history_per_symbol: int | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self._freshness_window = (
             freshness_window_seconds
@@ -87,6 +85,12 @@ class EvidenceAggregator:
         self._max_history = (
             max_history_per_symbol if max_history_per_symbol is not None else settings.aggregation.max_history_per_symbol
         )
+        #: Defaults to the real wall clock. The Simulation Engine
+        #: (``app/simulation/``) injects a ``SimulatedClock`` instead, so
+        #: freshness/decay is computed against simulated time rather than
+        #: however fast this particular run happens to execute — see
+        #: ``app/core/clock.py``.
+        self._clock: Clock = clock or SystemClock()
         self._history: dict[str, list[_Record]] = defaultdict(list)
         self._event_bus: EventBus | None = None
         self._weighting_config = ConfidenceWeightingConfig.from_settings(settings)
@@ -169,7 +173,7 @@ class EvidenceAggregator:
     async def _on_evidence(self, event: EvidenceProduced) -> None:
         evidence = event.evidence
         symbol = evidence.symbol or "UNKNOWN"
-        now = _utcnow()
+        now = self._clock.now()
         group_key = f"{evidence.source}:{evidence.title}"
 
         history = self._history[symbol]
@@ -190,6 +194,7 @@ class EvidenceAggregator:
             await self._event_bus.publish(
                 EvidenceAggregated(
                     source="EvidenceAggregator",
+                    timestamp=self._clock.now(),
                     symbol=symbol,
                     evidence=evidence,
                     enrichment=enrichment.model_dump(mode="json"),
@@ -222,7 +227,7 @@ class EvidenceAggregator:
         on-demand without waiting for one. Includes the Confidence
         Weighting Framework's current weighted view alongside the raw
         active evidence."""
-        now = _utcnow()
+        now = self._clock.now()
         active_evidence, by_group = self._active_view(symbol, now)
 
         bullish = sum(1 for e in active_evidence if e.direction == "bullish")

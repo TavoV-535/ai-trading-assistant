@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.core.clock import Clock, SystemClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import EvidenceAggregated, StrategyMatched
 from app.logging import get_logger
@@ -32,8 +33,9 @@ class StrategyEngine:
     """Loads compiled strategies and evaluates them against every symbol's
     evidence as it's aggregated."""
 
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, *, clock: Clock | None = None) -> None:
         self._settings = settings
+        self._clock: Clock = clock or SystemClock()
         self._strategies: list[CompiledStrategy] = []
         self._matched: dict[tuple[str, str], bool] = {}
         self._event_bus: EventBus | None = None
@@ -67,6 +69,7 @@ class StrategyEngine:
                 await self._event_bus.publish(
                     StrategyMatched(
                         source="StrategyEngine",
+                        timestamp=self._clock.now(),
                         strategy=evaluation.strategy,
                         symbol=event.symbol,
                         score=evaluation.score,

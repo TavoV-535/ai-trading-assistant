@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import Base
 from app.db.models import EventLog
-from app.event_bus.events import Event
+from app.event_bus.events import DecisionRecorded, Event
 from app.logging import get_logger
+from app.timeline.models import DecisionRecord
 
 ModelT = TypeVar("ModelT", bound=Base)
 
@@ -91,3 +92,33 @@ class EventLogRepository(Repository[EventLog]):
             stmt = stmt.where(EventLog.event_type == event_type)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def decision_records(self, *, symbol: str | None = None, limit: int = 100) -> list[DecisionRecord]:
+        """The Decision Timeline's durable, unbounded history — every
+        ``DecisionRecorded`` event ever published, reconstructed straight
+        from its already-persisted ``event_log`` row (no separate table;
+        see ``app/timeline/engine.py``'s module docstring for why).
+
+        Filters by ``symbol`` in Python after a bounded DB fetch rather
+        than a JSON-containment SQL clause — this codebase's generic
+        ``Repository`` deliberately never hand-builds dialect-specific SQL
+        (no raw SQL anywhere), and the volumes this method serves today
+        (an in-process query, not a public API under load) don't yet
+        justify a dedicated indexed column. A future milestone can add one
+        if querying performance at scale ever requires it -- a documented,
+        deferred scope boundary, the same pattern this codebase uses
+        throughout (see e.g. the Confidence Weighting Framework's
+        correlation-dampening proxy)."""
+        # Fetch a generous page so Python-side symbol filtering still
+        # yields up to `limit` matches in the common case without needing
+        # to page repeatedly; recent() already bounds this query's cost.
+        rows = await self.recent(event_type="DecisionRecorded", limit=max(limit * 5, limit))
+        records: list[DecisionRecord] = []
+        for row in rows:
+            if symbol is not None and row.payload.get("symbol") != symbol:
+                continue
+            event = DecisionRecorded.model_validate({**row.payload, "event_id": row.event_id, "timestamp": row.created_at, "source": row.source, "correlation_id": row.correlation_id})
+            records.append(DecisionRecord.from_event(event))
+            if len(records) >= limit:
+                break
+        return records

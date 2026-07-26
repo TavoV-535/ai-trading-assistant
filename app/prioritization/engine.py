@@ -37,9 +37,10 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
+from app.core.clock import Clock, SystemClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import AlertGenerated, EvidenceAggregated, MarketContextUpdated, StrategyMatched, SymbolProfileUpdated
 from app.logging import get_logger
@@ -56,10 +57,6 @@ _HIGH_IMPORTANCE_CONTEXT_TYPES = {"risk_regime", "macro_event", "gap"}
 #: (plugin score scales aren't standardized), a documented, defensible
 #: default until a richer per-source calibration exists.
 _EVIDENCE_URGENCY_SCALE = 30.0
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -86,13 +83,17 @@ class EventPrioritizationEngine:
     here is event-bus mediated), only that ``attach()`` runs before
     events start flowing."""
 
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, *, clock: Clock | None = None) -> None:
         section = getattr(settings, "prioritization", None)
         self._alert_threshold = float(getattr(section, "alert_threshold", 60.0))
         self._cooldown_seconds = float(getattr(section, "alert_cooldown_seconds", 300.0))
         self._watchlist_only = bool(getattr(section, "watchlist_only", True))
         self._decision_log_size = int(getattr(section, "decision_log_size", 20))
         self._scoring_config = PrioritizationScoringConfig()
+        #: Defaults to the real wall clock -- the Simulation Engine injects
+        #: a SimulatedClock so the duplicate-suppression cooldown is
+        #: computed against simulated time. See app/core/clock.py.
+        self._clock: Clock = clock or SystemClock()
 
         portfolio_section = getattr(settings, "portfolio", None)
         self._watchlist: set[str] = set(getattr(portfolio_section, "watchlist", None) or [])
@@ -204,7 +205,7 @@ class EventPrioritizationEngine:
         urgency: float,
         alert_key: str,
     ) -> None:
-        now = _utcnow()
+        now = self._clock.now()
 
         if self._watchlist_only and (symbol is None or symbol not in self._watchlist):
             self._record(symbol, title, 0.0, {}, "symbol not on the configured watchlist", source_event_type, now, accepted=False)
@@ -240,6 +241,7 @@ class EventPrioritizationEngine:
         await self._event_bus.publish(
             AlertGenerated(
                 source="EventPrioritizationEngine",
+                timestamp=self._clock.now(),
                 symbol=symbol,
                 title=title,
                 message=message,

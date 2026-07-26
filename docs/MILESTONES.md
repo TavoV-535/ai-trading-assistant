@@ -498,6 +498,153 @@ a silent assumption.
   Bus, no direct calls between the two new engines (see
   `tests/test_milestone8_pipeline_integration.py`).
 
+## Milestone 9 — Unified Simulation Engine + Decision Timeline ✅ complete
+
+- **Clock abstraction** (`app/core/clock.py`) — `Clock` ABC (`now()`);
+  `SystemClock` (real wall clock, default everywhere, so every existing
+  call site is unaffected) and `SimulatedClock` (a settable virtual clock —
+  `now()`, `advance_to(when)` rejecting backwards movement, `tick(delta)`).
+  Injected as an optional `clock: Clock | None = None` constructor kwarg
+  into every core engine whose internal math is time-sensitive:
+  `EvidenceAggregator` (freshness/decay), `MarketContextEngine`,
+  `StrategyEngine`, `PortfolioIntelligenceEngine` (confidence trend, alert
+  suppression), `EventPrioritizationEngine` (alert cooldown). Just as
+  important, every event these five engines publish
+  (`EvidenceAggregated`, `MarketContextUpdated`, `StrategyMatched`,
+  `SymbolProfileUpdated`, `AlertGenerated`) is now stamped with
+  `timestamp=self._clock.now()` explicitly at the publish call site,
+  rather than left to `Event`'s own real-wall-clock default — an engine's
+  *internal* math being simulated doesn't help determinism if the *event*
+  it emits still carries a real timestamp. (This exact gap — `AlertGenerated`
+  still defaulting to `datetime.now()` — was caught by this milestone's own
+  determinism test comparing two independent simulation runs field-for-
+  field, not assumed away; see "Testing" below.) Deliberately NOT
+  propagated into indicator/intelligence plugins' `Evidence.created_at` or
+  `IndicatorCalculated`/`EvidenceProduced` timestamps — verified via grep
+  that nothing in decision logic reads those fields, documented as a
+  narrow, explicit scope boundary.
+- **`EventBus.drain()`** (`app/event_bus/bus.py`) — a new public method
+  waiting until every event published so far, including events published
+  from *within* a handler while draining, has fully settled. Tracked with
+  one bus-wide in-flight counter (incremented in `publish()` before an item
+  lands in a queue, decremented after `task_done()`) rather than
+  `asyncio.gather(*(q.join() for q in queues))` over each subscriber's own
+  queue — the latter looks equivalent but has a real race: `Queue.join()`
+  only blocks if that specific queue *already* has unfinished items at the
+  moment `join()` is called, so a downstream queue that hasn't received its
+  first item yet (because the handler that will publish to it hasn't run
+  yet) reports "already finished" instantly, meaning `drain()` could return
+  before a later hop of a multi-hop cascade even started. This is what lets
+  the Simulation Engine publish one simulated bar and then deterministically
+  wait for the *entire* downstream reaction to settle before advancing,
+  without depending on asyncio's task-scheduling order. `shutdown(drain=True)`
+  now uses this same primitive instead of duplicating the logic.
+- **`FUNDAMENTAL_CATEGORIES`** (`app/evidence/schema.py`) — promoted out of
+  a private duplicate in `app/portfolio/engine.py` so the Portfolio
+  Intelligence Layer and the new Decision Timeline share one classification
+  of which evidence categories count as "external intelligence" vs.
+  technical.
+- **`DecisionRecorded`** (`app/event_bus/events.py`) — a new immutable
+  event: the canonical record of one point-in-time reasoning snapshot.
+  Timestamp, symbol, market context, technical + fundamental evidence
+  (human-readable summaries), confidence weights, matched strategies, a
+  reasoning summary, `reasoning_source`, confidence, `simulated_action` (a
+  `watch_bullish`/`watch_bearish`/`watch_neutral`/`no_action` hypothesis
+  label — deliberately never `buy`/`sell`), the price at decision time,
+  `bar_index`/`lookahead_bars`, and `outcome`/`outcome_price_change_pct`/
+  `outcome_pending`.
+- **Decision Timeline** (`app/timeline/`) — a new core module (not a
+  plugin), the same tier as the Evidence Aggregator or Portfolio
+  Intelligence Layer. `DecisionTimeline` subscribes to `DecisionRecorded`
+  and maintains a bounded (`simulation.timeline_max_per_symbol`), queryable,
+  per-symbol history (`for_symbol()`, `all()`, `symbols()`,
+  `total_recorded`). Durable persistence needed no new database table: every
+  event on the bus, `DecisionRecorded` included, is already persisted
+  verbatim by the existing bus-wide `attach_event_logger` subscriber via the
+  Repository pattern. `EventLogRepository.decision_records()`
+  (`app/db/repository.py`) reconstructs `DecisionRecord` objects straight
+  from those durable `event_log` rows.
+- **Unified Simulation Engine** (`app/simulation/`, this milestone's
+  centerpiece) — `SimulationEngine.run(config)` is a self-contained
+  "mini-bootstrap": one isolated `EventBus`, a fresh instance of every core
+  engine (all clock-injected where relevant), a fresh `PluginRegistry`
+  loading `plugins/market_data` → `plugins/indicators` (+
+  `plugins/intelligence` optionally) in the exact same two-phase pattern as
+  `app/core/bootstrap.py`. Drives historical bars one at a time via
+  `MarketDataService.fetch()` (reusing the existing deterministic
+  `ReplayProviderPlugin`, never a simulation-specific data path),
+  publishing `MarketDataUpdated` with an explicit simulated timestamp and
+  draining the bus after each bar (and after each intelligence poll) for
+  deterministic full-cascade settling before advancing. Builds
+  `DecisionRecorded` snapshots every `decision_interval_bars` bars per
+  symbol (buffered, never published until resolved), resolves outcomes
+  once `lookahead_bars` further bars exist by comparing subsequent price
+  action against the decision's implied direction (within a configurable
+  neutral band), and honestly force-flushes any still-unresolved decisions
+  (`outcome=None`, `outcome_pending=True`) at run end rather than
+  fabricating a result. Intelligence plugins' real background polling task
+  is cancelled immediately after loading (`poll_once()` itself is
+  deterministic; its wall-clock-interval background loop is not
+  simulation-safe) — the engine calls `poll_once()` directly on a fixed
+  simulated cadence instead. The Reasoning Engine is always constructed
+  with `provider=None` during simulation — no real AI provider call, for
+  determinism/reproducibility/cost, using the exact same evidence-only code
+  path live operation already uses whenever unconfigured. `pace: "instant"`
+  (no delay, backtesting/optimization speed) vs. `"realtime"` (sleeps
+  `bar_interval_seconds` between bars, a future human-watchable Replay
+  Mode) is a single knob unifying "Historical Backtesting" and "Replay
+  Mode" architecturally, per the spec. Stateless between calls — each
+  `run()` gets its own fully isolated engines/event bus, already supporting
+  "run the same historical window under different configs and compare
+  results" (Strategy Comparison / Parameter Optimization) by construction.
+- **`SimulationSection` config** (`app/config/settings.py`,
+  `config/default.yaml`) — `default_bar_count`, `default_timeframe`,
+  `bar_interval_seconds`, `pace`, `decision_interval_bars`,
+  `lookahead_bars`, `outcome_neutral_band_pct`, `include_intelligence`,
+  `intelligence_poll_interval_bars`, `timeline_max_per_symbol`.
+  Deliberately no `seed` field — reproducibility comes from the configured
+  market data provider's own already-deterministic config
+  (`plugins/market_data/replay/config.yaml`), not a second seeding
+  mechanism.
+- 52 new tests: 9 Clock (`tests/test_clock.py`), 5 `EventBus.drain()`
+  (`tests/test_event_bus.py`), 1 `FUNDAMENTAL_CATEGORIES`
+  (`tests/test_evidence_schema.py`), 1 `SimulationSection` config
+  (`tests/test_config.py`), 1 `EventLogRepository.decision_records()`
+  (`tests/test_db.py`), 7 Decision Timeline (`tests/test_timeline.py`), 23
+  Simulation Engine unit + focused-integration tests including the
+  two-independent-runs determinism check (`tests/test_simulation_engine.py`),
+  and 5 full Milestone 9 pipeline integration tests
+  (`tests/test_milestone9_pipeline_integration.py`) — complete event
+  pipeline generation, Decision Timeline reasoning/context/confidence/
+  outcome recording, real-event-bus verification, `/analyze` run against a
+  simulation's engines using the real unmodified `AnalyzePlugin`, and
+  repeated-run isolation. Two architectural import-guardrail tests updated
+  (`app.core.clock` added as a legitimate shared-utility exception for
+  `MarketContextEngine` and `StrategyEngine`, alongside the Milestone 8
+  updates for `PortfolioIntelligenceEngine`/`EventPrioritizationEngine`).
+  377 tests passing total, ~96% coverage of `app/` (maintained from
+  Milestone 8; every new module in the 97-100% range), ruff clean.
+- **A real bug found and fixed by this milestone's own tests, not shipped
+  around:** the first version of `EventBus.drain()` used
+  `asyncio.gather(*(q.join() for q in subscribers))`, which looked correct
+  but had a race — see "`EventBus.drain()`" above. A dedicated multi-hop
+  cascade test (`test_drain_waits_out_a_multi_hop_cascade`) caught it
+  failing intermittently; fixed with the bus-wide in-flight counter
+  described above, then verified stable across repeated runs. Separately,
+  the same rigor caught `AlertGenerated` (and, on inspection, four sibling
+  events) publishing with real wall-clock timestamps despite every engine
+  involved being fully clock-injected — see "Clock abstraction" above.
+  Both fixes are load-bearing for the milestone's explicit determinism
+  requirement, not cosmetic.
+- Live-verified end to end: a real `SimulationEngine.run()` over 60-70
+  simulated bars for NVDA/AAPL produces real `StrategyMatched`/
+  `MarketContextUpdated`/`SymbolProfileUpdated`/`AlertGenerated` events
+  through the real Event Bus, a populated Decision Timeline with resolved
+  outcomes, and an `/analyze NVDA` response — via the real, unmodified
+  `AnalyzePlugin` — that reflects the simulation's own engines exactly the
+  way it would reflect live ones (see the Milestone 9 completion report for
+  the transcript).
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —

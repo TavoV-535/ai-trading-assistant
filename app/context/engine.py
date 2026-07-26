@@ -47,6 +47,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.clock import Clock, SystemClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import EvidenceProduced, MarketContextUpdated, MarketDataUpdated
 from app.logging import get_logger
@@ -85,7 +86,8 @@ class MarketContextEngine:
     order doesn't matter, only that ``attach()`` runs before events start
     flowing."""
 
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, *, clock: Clock | None = None) -> None:
+        self._clock: Clock = clock or SystemClock()
         section = getattr(settings, "context", None)
         self._trend_window = int(getattr(section, "trend_window", 20))
         self._trend_bull_threshold = float(getattr(section, "trend_bull_threshold_pct", 1.5))
@@ -262,6 +264,7 @@ class MarketContextEngine:
         await self._event_bus.publish(
             MarketContextUpdated(
                 source="MarketContextEngine",
+                timestamp=self._clock.now(),
                 symbol=symbol,
                 context_type=context_type,
                 label=label,

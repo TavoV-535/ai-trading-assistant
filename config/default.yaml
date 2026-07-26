@@ -165,3 +165,40 @@ prioritization:
   # Only watchlist symbols (portfolio.watchlist) are eligible for alerts.
   watchlist_only: true
   decision_log_size: 20
+
+simulation:
+  # The Unified Simulation Engine (app/simulation/) -- the common execution
+  # environment for Historical Backtesting, Replay Mode, Strategy
+  # Comparison, Parameter Optimization, and future AI Training. Publishes
+  # the exact same events live operation does, through the exact same
+  # engines, over an isolated event bus scoped to one run.
+  default_bar_count: 200
+  default_timeframe: "1m"
+  # Simulated wall-clock time advanced per bar -- independent of how fast
+  # the bar is actually processed on this machine, which is what makes
+  # freshness/decay/cooldown math reproducible run to run.
+  bar_interval_seconds: 60
+  # "instant" (no delay -- backtesting/optimization speed) or "realtime"
+  # (sleeps bar_interval_seconds between bars -- a human-watchable Replay
+  # Mode speed). Both publish identical events through identical engines.
+  pace: "instant"
+  # How often (in bars) the Decision Timeline records a decision per symbol.
+  decision_interval_bars: 5
+  # How many further bars must elapse before a recorded decision's outcome
+  # (did subsequent price action agree with its direction) is resolved.
+  lookahead_bars: 10
+  # Price moves smaller than this (percent) resolve to "neutral" rather
+  # than "correct"/"incorrect" -- avoids over-crediting noise-level moves.
+  outcome_neutral_band_pct: 0.05
+  # Whether the Simulation Engine also drives News/Earnings/Macro evidence
+  # (by calling each plugin's deterministic poll_once() directly) alongside
+  # technical evidence.
+  include_intelligence: true
+  intelligence_poll_interval_bars: 5
+  # Bounded per-symbol in-memory history kept by DecisionTimeline -- the
+  # durable, unbounded record always remains queryable from event_log.
+  timeline_max_per_symbol: 500
+  # Reproducibility comes from the configured market data provider's own
+  # deterministic seed (plugins/market_data/replay/config.yaml) -- the
+  # Simulation Engine deliberately introduces no second seeding mechanism,
+  # it just uses market_data.providers the same way live operation does.

@@ -54,3 +54,18 @@ def test_database_url_default(monkeypatch):
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.database_url.startswith("postgresql+asyncpg://")
+
+
+def test_milestone9_simulation_section_loads_from_yaml(settings):
+    assert settings.simulation.default_bar_count == 200
+    assert settings.simulation.default_timeframe == "1m"
+    assert settings.simulation.pace == "instant"
+    assert settings.simulation.decision_interval_bars == 5
+    assert settings.simulation.lookahead_bars == 10
+    assert settings.simulation.outcome_neutral_band_pct > 0
+    assert settings.simulation.include_intelligence is True
+    assert settings.simulation.intelligence_poll_interval_bars == 5
+    assert settings.simulation.timeline_max_per_symbol == 500
+    # No second seeding mechanism -- reproducibility comes from the
+    # configured market data provider's own already-deterministic config.
+    assert not hasattr(settings.simulation, "seed")

@@ -41,21 +41,18 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
+from app.core.clock import Clock, SystemClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import AlertGenerated, EvidenceAggregated, MarketContextUpdated, StrategyMatched, SymbolProfileUpdated
+from app.evidence.schema import FUNDAMENTAL_CATEGORIES
 from app.logging import get_logger
 from app.portfolio.models import SymbolProfile
 from app.portfolio.scoring import PortfolioScoringConfig, compute_priority
 
 log = get_logger(__name__)
-
-#: Evidence categories treated as "external intelligence" rather than
-#: technical analysis -- matches the categories the reference News/
-#: Earnings/Macro plugins publish (see plugins/intelligence/).
-_FUNDAMENTAL_CATEGORIES = {"News", "Earnings", "Macro"}
 
 #: Bounded so a long-running deployment's matched-strategy list per symbol
 #: never grows without limit -- the most recent few are what's actually
@@ -66,10 +63,6 @@ _MAX_MATCHED_STRATEGIES = 5
 #: without this, a symbol sitting near a threshold would spam a fresh
 #: event on essentially every tick.
 _SCORE_CHANGE_THRESHOLD = 0.5
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -84,13 +77,18 @@ class PortfolioIntelligenceEngine:
     bootstrap; ``/watchlist`` and `/analyze`'s portfolio line both query
     it on demand via ``snapshot()``/``ranked_watchlist()``."""
 
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, *, clock: Clock | None = None) -> None:
         section = getattr(settings, "portfolio", None)
         self._watchlist: tuple[str, ...] = tuple(getattr(section, "watchlist", None) or [])
         self._trend_window = int(getattr(section, "confidence_trend_window", 8))
         self._trend_margin = float(getattr(section, "confidence_trend_margin", 0.05))
         self._fundamental_freshness_seconds = float(getattr(section, "fundamental_freshness_seconds", 600.0))
         self._scoring_config = PortfolioScoringConfig.from_settings(settings)
+        #: Defaults to the real wall clock -- the Simulation Engine injects
+        #: a SimulatedClock so weight-history timestamps, confidence trend,
+        #: and alert-suppression dampening are all computed against
+        #: simulated time. See app/core/clock.py.
+        self._clock: Clock = clock or SystemClock()
 
         self._tracked: dict[str, _Tracked] = {
             symbol: _Tracked(profile=SymbolProfile(symbol=symbol), weight_history=deque(maxlen=self._trend_window))
@@ -133,9 +131,9 @@ class PortfolioIntelligenceEngine:
 
         active = event.active_evidence
         weighted = event.weighted_evidence
-        now = _utcnow()
+        now = self._clock.now()
 
-        if event.evidence.category in _FUNDAMENTAL_CATEGORIES:
+        if event.evidence.category in FUNDAMENTAL_CATEGORIES:
             self._last_fundamental_at[event.symbol] = now
 
         top_weight = max((w.weight for w in weighted), default=0.0)
@@ -208,7 +206,7 @@ class PortfolioIntelligenceEngine:
     async def _recompute_and_maybe_publish(self, symbol: str) -> None:
         tracked = self._tracked[symbol]
         profile = tracked.profile
-        now = _utcnow()
+        now = self._clock.now()
 
         score, breakdown = compute_priority(
             top_weight=profile.top_weight,
@@ -231,6 +229,7 @@ class PortfolioIntelligenceEngine:
         await self._event_bus.publish(
             SymbolProfileUpdated(
                 source="PortfolioIntelligenceEngine",
+                timestamp=self._clock.now(),
                 symbol=symbol,
                 priority_score=score,
                 priority_breakdown=breakdown,

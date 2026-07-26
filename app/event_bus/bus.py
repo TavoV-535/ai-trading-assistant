@@ -68,6 +68,14 @@ class EventBus:
         self._subscribers: dict[str, list[_Subscriber]] = defaultdict(list)
         self._global_subscribers: list[_Subscriber] = []
         self._started = False
+        #: Bus-wide count of events that have been handed to a subscriber's
+        #: queue (via `put`) but not yet fully processed (`task_done` not yet
+        #: called). `drain()` waits on this reaching zero rather than on each
+        #: subscriber's own `queue.join()` -- see `drain()`'s docstring for
+        #: why a per-queue join() is not safe for a multi-hop cascade.
+        self._pending_count = 0
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
 
     @classmethod
     def from_settings(cls, settings: Any) -> "EventBus":
@@ -131,6 +139,12 @@ class EventBus:
                     subscriber=subscriber.name,
                     queue_size=subscriber.queue.qsize(),
                 )
+            # Mark this item "in flight" on the bus-wide counter *before* it
+            # actually lands in the queue -- see drain()'s docstring for why
+            # this has to happen here rather than being inferred from queue
+            # state after the fact.
+            self._pending_count += 1
+            self._idle_event.clear()
             await subscriber.queue.put(event)
 
     # ---------------------------------------------------------------- worker loop
@@ -160,6 +174,9 @@ class EventBus:
                         elapsed_seconds=round(elapsed, 3),
                     )
                 subscriber.queue.task_done()
+                self._pending_count -= 1
+                if self._pending_count == 0:
+                    self._idle_event.set()
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -169,16 +186,55 @@ class EventBus:
             result.extend(bucket)
         return result
 
+    async def drain(self, *, timeout: float = 5.0) -> bool:
+        """Wait until every event published so far -- including events
+        published from *within* a handler while draining -- has been fully
+        processed.
+
+        Tracked with one bus-wide in-flight counter (incremented in
+        ``publish()`` before an item lands in a queue, decremented in
+        ``_consume()`` after ``task_done()``) rather than
+        ``asyncio.gather(*(q.join() for q in queues))`` over each
+        subscriber's own queue. The per-queue-``join()`` approach looks
+        equivalent but is not: ``Queue.join()`` only blocks if that
+        specific queue *already* has unfinished items at the moment
+        ``join()`` is called -- a downstream queue that hasn't received its
+        first item yet (because the handler that will publish to it hasn't
+        run yet) reports "already finished" instantly, so ``drain()`` could
+        return before a later hop of the cascade even started. The single
+        counter has no such blind spot: it reflects the true "is anything
+        still in flight anywhere on this bus" state regardless of which
+        queue a future publish lands on.
+
+        This is what lets the Simulation Engine (``app/simulation/``)
+        publish one simulated bar's ``MarketDataUpdated`` events and then
+        deterministically wait for the *entire* downstream reaction
+        (indicators → aggregator → strategy engine → portfolio/
+        prioritization engines → reasoning engine) to fully settle before
+        advancing to the next bar — the same guarantee live operation gets
+        "eventually," just made synchronous and ordered for one bar at a
+        time, and without depending on asyncio task-scheduling order.
+        Returns ``True`` if everything drained before ``timeout``,
+        ``False`` on timeout (logged, never raised — a slow subscriber
+        during a drain is visible, not fatal).
+
+        ``shutdown(drain=True)`` uses this same primitive before tearing
+        subscribers down.
+        """
+        if self._pending_count == 0:
+            return True
+        try:
+            await asyncio.wait_for(self._idle_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            log.warning("event_bus_drain_timeout", pending_count=self._pending_count)
+            return False
+
     async def shutdown(self, *, drain: bool = True, timeout: float = 5.0) -> None:
         """Stop all subscriber workers. If ``drain``, wait for queues to empty first."""
         subscribers = self.all_subscribers()
         if drain:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(s.queue.join() for s in subscribers)), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                log.warning("event_bus_shutdown_drain_timeout", pending_subscribers=len(subscribers))
+            await self.drain(timeout=timeout)
         for subscriber in subscribers:
             if subscriber.task and not subscriber.task.done():
                 subscriber.task.cancel()

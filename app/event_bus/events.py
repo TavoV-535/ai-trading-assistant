@@ -346,6 +346,73 @@ class AlertGenerated(Event):
     source_event_type: str
 
 
+class DecisionRecorded(Event):
+    """Published by the Decision Timeline (``app/timeline/``) — the
+    canonical historical record of one point-in-time reasoning snapshot,
+    produced today only by the Simulation Engine (``app/simulation/``)
+    replaying historical data, one per watched symbol every
+    ``simulation.decision_interval_bars`` simulated bars. Not a trade
+    order and not a recommendation — ``simulated_action`` is deliberately
+    phrased as a hypothesis label ("watch_bullish"/"watch_bearish"/
+    "watch_neutral"/"no_action"), never "buy"/"sell", matching this
+    platform's explicit non-goal of being a signal-selling bot.
+
+    Everything here is built from the exact same query surface ``/analyze``
+    already uses (``EvidenceAggregator.snapshot()``,
+    ``MarketContextEngine.snapshot()``, ``ReasoningEngine.analyze()``,
+    ``PortfolioIntelligenceEngine.snapshot()``) — the Decision Timeline
+    adds no parallel reasoning path of its own, only a durable record of
+    what those systems already said at the time.
+
+    ``outcome`` starts unset. The Simulation Engine resolves it once
+    ``lookahead_bars`` further simulated bars of price data exist for the
+    symbol (comparing subsequent price action against the decision's
+    implied direction) and only then publishes this event — an
+    already-published event is never mutated (events are immutable), so a
+    decision is recorded exactly once, fully resolved, or — if the
+    simulation run ends before enough lookahead data exists — with
+    ``outcome=None`` and ``outcome_pending=True``, an honest "not enough
+    data yet" rather than a fabricated result."""
+
+    symbol: str
+    #: Market-wide + symbol-specific labels from the Market Context Engine,
+    #: symbol-specific winning on any collision (same convention as
+    #: ``ReasoningEngine.context_for()``).
+    market_context: dict[str, str] = Field(default_factory=dict)
+    #: Human-readable summaries of the active technical evidence
+    #: (``f"{source}: {title} ({direction}, {confidence}/100)"``), split
+    #: from fundamental evidence via ``Evidence.category`` /
+    #: ``FUNDAMENTAL_CATEGORIES`` (see ``app/evidence/schema.py``).
+    technical_evidence: list[str] = Field(default_factory=list)
+    fundamental_evidence: list[str] = Field(default_factory=list)
+    #: ``f"{source}:{title}"`` -> the Confidence Weighting Framework's
+    #: normalized ``[0, 1]`` weight for that evidence item at decision time.
+    confidence_weights: dict[str, float] = Field(default_factory=dict)
+    #: Currently matched strategy names (from the Portfolio Intelligence
+    #: Layer's tracked profile when the symbol is on the watchlist, empty
+    #: otherwise).
+    strategy_matches: list[str] = Field(default_factory=list)
+    #: ``ReasoningOutput.market_summary`` — the exact text ``/analyze``
+    #: would show, not a re-derived paraphrase.
+    reasoning_summary: str = ""
+    #: ``ReasoningOutput.source`` — "ai" | "evidence_only" |
+    #: "insufficient_evidence". Simulation runs always use "evidence_only"
+    #: (a real AI provider is deliberately never called during simulation —
+    #: non-deterministic, costs real API calls, and unnecessary for
+    #: reproducible historical analysis).
+    reasoning_source: str = "insufficient_evidence"
+    confidence: float = Field(default=0.0, ge=0.0, le=100.0)
+    simulated_action: str = "no_action"  # "watch_bullish" | "watch_bearish" | "watch_neutral" | "no_action"
+    price_at_decision: float | None = None
+    bar_index: int = 0
+    lookahead_bars: int = 0
+    #: "correct" | "incorrect" | "neutral" | None (still pending / not
+    #: applicable to a "no_action" decision).
+    outcome: str | None = None
+    outcome_price_change_pct: float | None = None
+    outcome_pending: bool = True
+
+
 EVENT_TYPES: dict[str, type[Event]] = {
     cls.__name__: cls
     for cls in (
@@ -369,6 +436,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         MarketContextUpdated,
         SymbolProfileUpdated,
         AlertGenerated,
+        DecisionRecorded,
         CommandInvoked,
         CommandFailed,
     )
