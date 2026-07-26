@@ -594,6 +594,80 @@ class ReflectionGenerated(Event):
     potential_improvements: str = ""
 
 
+#: The Learning Engine's canonical behavioral-pattern vocabulary
+#: (``app/learning/``, Milestone 12) — every ``CoachingEvent.pattern_type``
+#: is one of these strings, per PROJECT.md's Milestone 12 spec's list of
+#: recurring patterns to identify. Lives here, not in the engine module,
+#: for the same reason ``RISK_TYPES``/``ACTION_DIRECTIONS`` do: it's part
+#: of ``CoachingEvent``'s own wire vocabulary, not an implementation detail
+#: private to whichever engine happens to detect it.
+PATTERN_TYPES: tuple[str, ...] = (
+    "strongest_strategy",
+    "weakest_strategy",
+    "strongest_evidence_combination",
+    "weakest_evidence_combination",
+    "best_market_context",
+    "worst_market_context",
+    "confidence_calibration",
+    "recurring_mistake",
+    "recurring_strength",
+    "overtrading",
+    "undertrading",
+    "risk_management_habit",
+    "stop_loss_behavior",
+    "profit_taking_behavior",
+    "hold_time_trend",
+    "volatility_regime_performance",
+    "time_of_day_performance",
+    "day_of_week_performance",
+    "market_session_performance",
+    "watchlist_performance_trend",
+    "emotional_trend",
+)
+
+
+class CoachingEvent(Event):
+    """Published by the Learning Engine (``app/learning/``, Milestone 12) —
+    one immutable, structured behavioral-pattern observation, built purely
+    by reading other engines' already-published history (``DecisionRecorded``,
+    ``ReflectionGenerated``, ``JournalCreated``, ``RiskEvent``,
+    ``StrategyMatched``, ``MarketContextUpdated``, ``TradeOpened``/
+    ``TradeClosed``) — never by altering any of it. Per the Milestone 12
+    spec: "The Learning Engine should never alter historical data. It
+    should only observe, reason, and publish new events."
+
+    Recognizes long-term behavioral patterns across many decisions, not a
+    verdict on any single trade — ``historical_frequency`` and
+    ``supporting_history`` exist specifically so every claim here traces
+    back to concrete prior decisions/reflections/journal entries rather
+    than asserting an opaque conclusion. Flows through the Event Bus
+    exactly like every other event — Discord (``/coach``), a future
+    Dashboard, and any other independent subscriber consume it with no
+    direct dependency on the Learning Engine's internals."""
+
+    pattern_type: str
+    symbol: str | None = None
+    title: str
+    summary: str = ""
+    #: Evidence lines / observations supporting this pattern (same
+    #: formatted-string convention as ``DecisionRecorded.technical_evidence``
+    #: where applicable).
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=100.0)
+    #: References to the specific prior decisions/reflections/journal
+    #: entries/trades this pattern was derived from (human-readable
+    #: summaries, not just opaque IDs) -- what makes this explainable
+    #: rather than an assertion.
+    supporting_history: list[str] = Field(default_factory=list)
+    suggested_improvements: list[str] = Field(default_factory=list)
+    related_strategies: list[str] = Field(default_factory=list)
+    related_market_contexts: list[str] = Field(default_factory=list)
+    #: How many times this pattern was observed in the history scanned to
+    #: detect it (e.g. "matched 7 of the last 20 resolved decisions").
+    historical_frequency: int = 0
+    priority: Literal["low", "medium", "high"] = "medium"
+
+
 EVENT_TYPES: dict[str, type[Event]] = {
     cls.__name__: cls
     for cls in (
@@ -619,6 +693,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         AlertGenerated,
         DecisionRecorded,
         ReflectionGenerated,
+        CoachingEvent,
         CommandInvoked,
         CommandFailed,
     )

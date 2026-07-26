@@ -66,6 +66,15 @@ def create_app(settings: Any | None = None) -> FastAPI:
         }
         return JSONResponse(body, status_code=200 if overall_ok else 503)
 
+    @app.get("/metrics")
+    async def metrics() -> dict:
+        """Lightweight performance metrics -- Milestone 12's architectural
+        recommendation ("processing time, queue depth, event throughput").
+        Reads straight off the Event Bus's running counters; adds no
+        background sampling task of its own."""
+        state: AppState = app.state.core
+        return {"event_bus": state.event_bus.statistics()}
+
     @app.get("/plugins")
     async def plugins() -> dict:
         state: AppState = app.state.core

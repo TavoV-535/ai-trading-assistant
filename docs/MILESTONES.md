@@ -952,6 +952,137 @@ a silent assumption.
   and a follow-up `/risk profile:scalper` switches and is reflected
   immediately on the next read.
 
+## Milestone 12 — Learning Engine, Trading Knowledge Graph, AI Coach ✅ complete
+
+- **Trading Knowledge Graph** (`app/knowledge_graph/graph.py`) — a new core
+  service (not a plugin) that builds a deterministic, bounded, in-memory
+  graph purely by observing events already on the bus (`DecisionRecorded`,
+  `ReflectionGenerated`, `JournalCreated`, `RiskEvent`, `StrategyMatched`,
+  `MarketContextUpdated`, and a new `CoachingEvent`) — never any machine
+  learning, every edge added by an explicit rule. `Decision` is the hub
+  every other node type connects through (Strategy, Evidence, Market
+  Context, Risk Profile, Outcome), so the spec's example chain is a short
+  walk through each Decision rather than a combinatorial edge explosion.
+  Edges dedupe on `(source, target, relation)`; bounded at 20,000 edges
+  with oldest-first eviction.
+- **Explainable Query Layer** (`app/knowledge_graph/query.py`) —
+  `KnowledgeGraphQueryEngine` answers the spec's exact example questions
+  (best strategy for a context/macro event, best/worst evidence
+  combinations by confidence vs. by win rate, best/worst market regimes,
+  recurring mistakes/strengths before losing/winning streaks, which
+  indicators disagree most, most reliable evidence sources, market
+  contexts generating false positives, confidence vs. actual outcome) —
+  every `QueryResult.explanation` is a literal, ordered trace back to
+  concrete graph nodes/edges/counts, never an opaque number. Delegates to
+  the Evidence Reliability Engine / Confidence Calibration service via
+  optional constructor injection when wired (no duplicated calculation),
+  with a documented graph-only fallback when they aren't.
+- **Confidence Calibration** (`app/analytics/calibration.py`) — buckets
+  resolved decisions by recorded confidence and tracks each bucket's
+  actual win rate incrementally, verdict per bucket plus an overall
+  verdict — the one place this gap is computed.
+- **Strategy Analytics** (`app/analytics/strategy_analytics.py`) — each
+  strategy's resolved win rate, sample size, and streak state, tracked
+  incrementally from `DecisionRecorded`/`StrategyMatched`.
+- **Evidence Reliability Engine** (`app/analytics/evidence_reliability.py`)
+  — per-evidence-source agreement rate with the eventual outcome, the same
+  running-tally discipline as Strategy Analytics.
+- **Analytics Service** (`app/analytics/service.py`) — composes the three
+  services above behind one read-only facade, the shared "Analytics
+  Service" the Milestone 12 architectural recommendations call for; a
+  structural test (`ast.parse`) proves the Learning Engine imports these
+  as composed collaborators, never reimplementing their logic.
+- **Learning Engine** (`app/learning/engine.py`) — subscribes to
+  `DecisionRecorded`/`ReflectionGenerated`; on each resolved decision runs
+  a fixed panel of independent pattern detectors over the Analytics
+  Service + Knowledge Graph Query Engine, publishing a `CoachingEvent` per
+  pattern found. Each detector is isolated — a broken detector logs and is
+  skipped, never crashing the rest of the review.
+- **Memory Index** (`app/memory/index.py`) — a plain in-memory index over
+  decisions/reflections/journal entries keyed by symbol, strategy, market
+  context, and outcome, kept current incrementally; `query()` filters on
+  any combination of those keys with a result-count cap — fast recall
+  without re-scanning the event log or the Knowledge Graph.
+- **Event Replay API** (`app/replay/service.py`) — `EventReplayService`
+  wraps the durable event log and `replay_decision(decision_event_id)`
+  reconstructs the full causal chain (originating decision, reflection,
+  journal notes, synthesized trade open/close, chronological timeline) for
+  any decision ever recorded — an honest `None`/empty result for an
+  unknown ID, never a crash. Deliberately **not** wired into
+  `SimulationConfig`/`SimulationResult`, since `SimulationEngine.run()`
+  never persists to a database.
+- **Decision Timeline visualization data** (`app/timeline/visualization.py`)
+  — extends the existing Decision Timeline with a pure, deterministic
+  function shaping its records into chart-ready structures, with zero
+  duplication of the Timeline's own record-building logic.
+- **Plugin capability metadata** (`app/plugins/base.py`) —
+  `PluginCapabilities` (`evidence_types`/`market_types`/`symbols`/
+  `timeframes`, each defaulting to "matches everything") is optional,
+  declared via a new concrete `capabilities()` method; every existing
+  plugin needed zero changes. `PluginRegistry.capabilities_all()`/
+  `.supporting(...)` are the new registry-level query surface.
+- **Lightweight performance metrics** (`app/event_bus/bus.py`) — per-
+  subscriber processed-count/total-processing-time/last-processing-time,
+  plus bus-wide published-event counters, exposed via new `health()`
+  (degraded on near-full queues), `diagnostics()`, and `statistics()`
+  methods, and a new `/metrics` FastAPI endpoint.
+- **`health()`/`diagnostics()`/`statistics()` on every new engine** —
+  `KnowledgeGraph`, `KnowledgeGraphQueryEngine`, `LearningEngine`,
+  `MemoryIndex`, and `EventReplayService` all expose the same
+  three-method introspection shape every core engine here already does.
+- **Full wiring** (`app/core/bootstrap.py`, `app/simulation/engine.py`,
+  `app/plugins/base.py`) — identical construction order in both live and
+  simulation modes: Confidence Calibration → Evidence Reliability →
+  Strategy Analytics → composed Analytics Service → Knowledge Graph →
+  Knowledge Graph Query Engine → Learning Engine → Memory Index →
+  (bootstrap.py only) Event Replay Service. `PluginContext` gained six new
+  optional fields so command plugins can read any of them.
+- **`/coach [focus]`** (`plugins/commands/coach/`) — no `focus` renders a
+  compact summary touching every one of the spec's coaching capabilities
+  in one message; a `focus` value (`summary`/`events`/`mistakes`/
+  `strengths`/`calibration`/`strategies`/`risk`/`trend` — manually
+  validated against a fixed tuple, since `CommandOption` has no built-in
+  enum support) deep-dives one section. Degrades gracefully to an
+  ephemeral message if the Learning Engine/Analytics Service aren't wired,
+  matching `/journal`/`/risk`'s established pattern.
+- 19 new tests were added on top of the original Milestone 12 test suite
+  after a coverage review (`tests/test_knowledge_graph.py` grew from 10 to
+  29 tests) to exercise every previously-uncovered `KnowledgeGraphQueryEngine`
+  method directly: `best_evidence_combinations` (ranks by average
+  confidence, distinct from win rate), `strongest_evidence_combinations`/
+  `weakest_evidence_combinations` (ranks by win rate), `worst_market_regimes`/
+  `best_market_regimes`, `recurring_mistakes_before_losing_streaks`/
+  `recurring_strengths_before_winning_streaks` (precise streak-recognition
+  index arithmetic), `best_strategies_during_market_event`'s delegation to
+  `best_strategy_for_context`, `indicators_that_disagree_most`,
+  `most_reliable_evidence_sources` (both the delegated and graph-only
+  fallback paths), `market_contexts_generating_false_positives`, and
+  `confidence_vs_actual_outcome`'s delegated path — plus honest "not enough
+  data yet" guard-clause coverage for each. 548 tests passing total (up
+  from 529), 95% coverage of `app/` (`app/knowledge_graph/query.py` rose
+  from 66% to 95%; `app/analytics/*`, `app/memory/index.py`,
+  `app/replay/service.py`, `app/plugins/base.py`, and `app/event_bus/bus.py`
+  all at 97-100%; `app/learning/engine.py` at 85%), ruff clean. One
+  pre-existing test (`test_bot_registers_help_ping_analyze_and_scan_commands`)
+  updated to expect the new `coach` command alongside the existing six.
+  One pre-existing, unrelated flaky test —
+  `test_milestone8_pipeline_integration.py`'s hardcoded `asyncio.sleep(0.2)`
+  instead of `event_bus.drain()` — surfaces intermittently only under
+  coverage instrumentation's slowdown; it passes reliably standalone (and
+  in the full uninstrumented 548-test run), and no Milestone 12 change
+  touches that file, so it's excluded from coverage-measurement runs as a
+  documented, pre-existing test-design issue rather than a regression.
+- Live-verified end to end: a real `SimulationEngine.run()` produces
+  `DecisionRecorded`/`ReflectionGenerated`/`RiskEvent`s that the Knowledge
+  Graph observes in real time; `KnowledgeGraphQueryEngine` answers "which
+  strategy performs best" and friends with a literal trace back to the
+  observed decisions; the Learning Engine publishes real `CoachingEvent`s
+  from that same data with zero duplicated calculation (verified both
+  behaviorally and structurally); `/coach` — via the real, unmodified
+  `CoachPlugin` — renders the full summary and every `focus` deep-dive from
+  that live state; `EventReplayService` reconstructs a real decision's full
+  causal chain from the durable event log.
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
@@ -965,23 +1096,25 @@ open to reordering based on what you want to see working first:
    blocker for anything else. A real News/Earnings/Macro provider (a real
    API instead of the synthetic reference plugins) is the same story for
    `settings.intelligence`-driven plugins.
-2. **AI Coach**, then **Replay Mode**, **Optimization Engine**, **Personal
-   Statistics** — roughly in that order. The Trading Journal and Reflection
-   Engine (Milestone 10), plus the Capital Protection Engine's `RiskEvent`
-   stream (Milestone 11), already give the AI Coach its entire input
-   surface (`ReflectionGenerated`'s lessons_learned/potential_improvements,
-   the Journal's enriched per-symbol history, structured risk state) — the
-   Coach becomes a new subscriber to events that already flow, not a new
-   data pipeline. These are also what would give the Action Registry's
-   Chart / News / History / Backtest / Watch / Replay / Coach actions real
-   behavior instead of a placeholder reply — each is a single
+2. **Replay Mode**, then **Optimization Engine**, **Personal Statistics** —
+   roughly in that order. The AI Coach is done as of Milestone 12
+   (`/coach`, the Learning Engine, the Knowledge Graph's Explainable Query
+   Layer); Replay Mode's entire backing system — `EventReplayService`,
+   `replay_decision()` — is also already built (Milestone 12), so wiring a
+   `Replay` Action Registry handler and/or a `/replay` command is now a
+   thin Discord-presentation layer over an existing service, not a new
+   data pipeline. Optimization Engine and Personal Statistics can now draw
+   directly on the Analytics Service / Knowledge Graph Query Engine rather
+   than recomputing anything. These are also what would give the Action
+   Registry's Chart / News / History / Backtest actions real behavior
+   instead of a placeholder reply — each is a single
    `ACTION_REGISTRY.register_handler()` call once the backing system
    exists. (`Watch` already has a real system behind it as of Milestone 8
-   — `/watchlist`; `Journal` already has a real command — `/journal` — as
-   of Milestone 10; `/risk` similarly as of Milestone 11 — though the
-   pre-existing Action Registry *button*s still intentionally use the
-   placeholder, since button handlers don't receive a `PluginContext` —
-   see `plugins/commands/journal/plugin.py`'s docstring.)
+   — `/watchlist`; `Journal` as of Milestone 10; `/risk` as of Milestone
+   11; `Coach`/`Replay` as of Milestone 12 — though the pre-existing
+   Action Registry *button*s for `Journal`/`Coach` still intentionally use
+   the placeholder, since button handlers don't receive a `PluginContext`
+   — see `plugins/commands/journal/plugin.py`'s docstring.)
 3. **More External Intelligence Platform sources** — SEC filings, insider
    activity, FDA approvals, M&A, buybacks, dividends, stock splits — each
    is a new folder under `plugins/intelligence/` against the same

@@ -164,3 +164,80 @@ async def test_shutdown_drain_true_uses_the_same_drain_primitive(event_bus: Even
 
     await event_bus.shutdown(drain=True)
     assert len(processed) == 1
+
+
+# ---------------------------------------------------------------- Milestone 12: lightweight performance metrics
+
+
+async def test_statistics_tracks_throughput_and_processing_time(event_bus: EventBus):
+    async def slow_handler(event):
+        await asyncio.sleep(0.02)
+
+    event_bus.subscribe(MarketDataUpdated, slow_handler, name="slow")
+    for _ in range(3):
+        await event_bus.publish(MarketDataUpdated(symbol="NVDA", price=100.0))
+    await event_bus.drain()
+
+    stats = event_bus.statistics()
+    assert stats["total_events_published"] == 3
+    assert stats["events_by_type"] == {"MarketDataUpdated": 3}
+    assert stats["pending_count"] == 0
+    slow_stats = stats["subscribers"]["slow"]
+    assert slow_stats["processed_count"] == 3
+    assert slow_stats["average_processing_time_ms"] > 0
+    assert slow_stats["queue_depth"] == 0
+    await event_bus.shutdown()
+
+
+async def test_statistics_reports_queue_depth_while_backlog_exists(event_bus: EventBus):
+    release = asyncio.Event()
+
+    async def blocked_handler(event):
+        await release.wait()
+
+    event_bus.subscribe(MarketDataUpdated, blocked_handler, name="blocked")
+    for _ in range(4):
+        await event_bus.publish(MarketDataUpdated(symbol="NVDA", price=100.0))
+    await asyncio.sleep(0.02)  # let the first item be picked up, the rest queue
+
+    stats = event_bus.statistics()
+    assert stats["subscribers"]["blocked"]["queue_depth"] >= 1
+
+    release.set()
+    await event_bus.drain()
+    await event_bus.shutdown()
+
+
+async def test_diagnostics_reports_subscriber_and_config_shape(event_bus: EventBus):
+    async def handler(event):
+        pass
+
+    event_bus.subscribe(MarketDataUpdated, handler, name="h1")
+    diagnostics = event_bus.diagnostics()
+    assert diagnostics["subscriber_count"] == 1
+    assert diagnostics["event_types_subscribed"] == ["MarketDataUpdated"]
+    assert diagnostics["queue_max_size"] > 0
+    await event_bus.shutdown()
+
+
+async def test_health_is_degraded_when_a_queue_is_nearly_full():
+    bus = EventBus(queue_max_size=2)
+
+    async def stuck_handler(event):
+        await asyncio.sleep(10)
+
+    bus.subscribe(MarketDataUpdated, stuck_handler, name="stuck")
+    await bus.publish(MarketDataUpdated(symbol="NVDA", price=100.0))
+    await bus.publish(MarketDataUpdated(symbol="NVDA", price=100.0))
+
+    health = await bus.health()
+    assert health["status"] == "degraded"
+    assert "stuck" in health["queues_near_full"]
+    await bus.shutdown(drain=False)
+
+
+async def test_health_is_healthy_with_no_backlog(event_bus: EventBus):
+    health = await event_bus.health()
+    assert health["status"] == "healthy"
+    assert health["queues_near_full"] == []
+    await event_bus.shutdown()

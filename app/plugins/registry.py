@@ -15,7 +15,7 @@ from typing import Any
 
 from app.event_bus.bus import EventBus
 from app.logging import get_logger
-from app.plugins.base import PluginBase, PluginContext, PluginHealth
+from app.plugins.base import PluginBase, PluginCapabilities, PluginContext, PluginHealth
 from app.plugins.loader import discover_plugins
 
 log = get_logger(__name__)
@@ -37,6 +37,12 @@ class PluginRegistry:
         portfolio_engine: Any | None = None,
         trading_journal: Any | None = None,
         capital_protection_engine: Any | None = None,
+        knowledge_graph: Any | None = None,
+        knowledge_graph_query: Any | None = None,
+        analytics_service: Any | None = None,
+        learning_engine: Any | None = None,
+        memory_index: Any | None = None,
+        event_replay_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
@@ -53,6 +59,12 @@ class PluginRegistry:
         self._portfolio_engine = portfolio_engine
         self._trading_journal = trading_journal
         self._capital_protection_engine = capital_protection_engine
+        self._knowledge_graph = knowledge_graph
+        self._knowledge_graph_query = knowledge_graph_query
+        self._analytics_service = analytics_service
+        self._learning_engine = learning_engine
+        self._memory_index = memory_index
+        self._event_replay_service = event_replay_service
         # Mutable, not constructor-only: market data provider plugins load
         # in an earlier phase than everything else (see bootstrap.py), so
         # this starts as None and is set once the Market Data Abstraction
@@ -114,6 +126,12 @@ class PluginRegistry:
                 portfolio_engine=self._portfolio_engine,
                 trading_journal=self._trading_journal,
                 capital_protection_engine=self._capital_protection_engine,
+                knowledge_graph=self._knowledge_graph,
+                knowledge_graph_query=self._knowledge_graph_query,
+                analytics_service=self._analytics_service,
+                learning_engine=self._learning_engine,
+                memory_index=self._memory_index,
+                event_replay_service=self._event_replay_service,
             )
 
             try:
@@ -158,3 +176,34 @@ class PluginRegistry:
 
     def get(self, name: str) -> PluginBase | None:
         return self._plugins.get(name)
+
+    def capabilities_all(self) -> dict[str, PluginCapabilities]:
+        """Every loaded plugin's declared :class:`PluginCapabilities`, by
+        name. The Milestone 12 "plugin capability metadata" recommendation
+        in practice: a future scanner, router, or command calls this (or
+        :meth:`supporting`) to filter plugins by evidence type, market
+        type, symbol, or timeframe — without this registry or
+        ``PluginBase`` ever needing to know what any specific plugin is."""
+        return {name: plugin.capabilities() for name, plugin in self._plugins.items()}
+
+    def supporting(
+        self,
+        *,
+        evidence_type: str | None = None,
+        market_type: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+    ) -> list[PluginBase]:
+        """Every loaded plugin whose declared capabilities are compatible
+        with every criterion given (see
+        :meth:`PluginCapabilities.supports`). Omit a criterion to leave it
+        unconstrained. Plugins that never override ``capabilities()``
+        declare everything unspecified, so they match any query — capability
+        filtering only ever narrows plugins that have actually opted in."""
+        return [
+            plugin
+            for plugin in self._plugins.values()
+            if plugin.capabilities().supports(
+                evidence_type=evidence_type, market_type=market_type, symbol=symbol, timeframe=timeframe
+            )
+        ]

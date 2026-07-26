@@ -7,17 +7,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.analytics.service import AnalyticsService
 from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.db.base import Database
 from app.event_bus.bus import EventBus
 from app.journal.engine import TradingJournal
+from app.knowledge_graph.graph import KnowledgeGraph
+from app.knowledge_graph.query import KnowledgeGraphQueryEngine
+from app.learning.engine import LearningEngine
 from app.marketdata.service import MarketDataService
+from app.memory.index import MemoryIndex
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
 from app.reflection.engine import ReflectionEngine
+from app.replay.service import EventReplayService
 from app.strategy.engine import StrategyEngine
 from app.timeline.engine import DecisionTimeline
 
@@ -42,6 +48,12 @@ class AppState:
     reflection_engine: ReflectionEngine
     trading_journal: TradingJournal
     capital_protection_engine: CapitalProtectionEngine
+    knowledge_graph: KnowledgeGraph
+    knowledge_graph_query: KnowledgeGraphQueryEngine
+    analytics_service: AnalyticsService
+    learning_engine: LearningEngine
+    memory_index: MemoryIndex
+    event_replay_service: EventReplayService
     project_root: Path
     discord_bot: "TradingBot | None" = None
     discord_task: "asyncio.Task[None] | None" = None

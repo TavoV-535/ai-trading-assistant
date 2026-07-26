@@ -46,6 +46,14 @@ class _Subscriber:
     handler: Handler
     queue: "asyncio.Queue[Event]"
     task: asyncio.Task[None] | None = None
+    #: Lightweight performance counters (Milestone 12's "processing time,
+    #: queue depth, event throughput" recommendation) — updated in
+    #: ``EventBus._consume()`` after every handled event. Cheap running
+    #: totals, not a time-series, so ``statistics()`` stays safe to call on
+    #: every ``/health``/``/metrics`` request.
+    processed_count: int = 0
+    total_processing_time: float = 0.0
+    last_processing_time: float = 0.0
 
 
 class EventBus:
@@ -76,6 +84,12 @@ class EventBus:
         self._pending_count = 0
         self._idle_event = asyncio.Event()
         self._idle_event.set()
+        #: Lightweight performance metrics (Milestone 12) -- bus-wide
+        #: publish counters, kept alongside the per-subscriber processing
+        #: counters on `_Subscriber`. See `statistics()`.
+        self._started_at = time.monotonic()
+        self._total_published = 0
+        self._published_by_type: dict[str, int] = defaultdict(int)
 
     @classmethod
     def from_settings(cls, settings: Any) -> "EventBus":
@@ -127,6 +141,8 @@ class EventBus:
         — a stuck handler should be visible as a growing backlog, not silent
         data loss.
         """
+        self._total_published += 1
+        self._published_by_type[event.event_type] += 1
         targets = list(self._subscribers.get(event.event_type, [])) + list(self._global_subscribers)
         if not targets:
             log.debug("event_published_no_subscribers", event_type=event.event_type, event_id=str(event.event_id))
@@ -166,6 +182,9 @@ class EventBus:
                 )
             finally:
                 elapsed = time.monotonic() - start
+                subscriber.processed_count += 1
+                subscriber.total_processing_time += elapsed
+                subscriber.last_processing_time = elapsed
                 if elapsed > self._slow_handler_threshold:
                     log.warning(
                         "event_handler_slow",
@@ -185,6 +204,61 @@ class EventBus:
         for bucket in self._subscribers.values():
             result.extend(bucket)
         return result
+
+    # ---------------------------------------------------------------- platform conventions
+
+    async def health(self) -> dict[str, Any]:
+        """Bus-wide health: degraded if any subscriber's queue is nearly
+        full (visible backpressure), matching the ``event_bus_backpressure``
+        warning already logged in ``publish()``."""
+        near_full = [
+            s.name for s in self.all_subscribers() if self._queue_max_size and s.queue.qsize() >= self._queue_max_size * 0.9
+        ]
+        return {
+            "status": "degraded" if near_full else "healthy",
+            "queues_near_full": near_full,
+            "pending_count": self._pending_count,
+        }
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "subscriber_count": len(self.all_subscribers()),
+            "event_types_subscribed": sorted(self._subscribers.keys()),
+            "global_subscriber_count": len(self._global_subscribers),
+            "queue_max_size": self._queue_max_size,
+            "slow_handler_threshold_seconds": self._slow_handler_threshold,
+        }
+
+    def statistics(self) -> dict[str, Any]:
+        """Lightweight performance metrics -- the Milestone 12
+        architectural recommendation: "processing time, queue depth, event
+        throughput." Built entirely from running counters already updated
+        in ``publish()``/``_consume()``, so this stays cheap enough to call
+        on every ``/health`` or ``/metrics`` request -- no separate
+        background sampling task, no time-series storage."""
+        uptime = max(time.monotonic() - self._started_at, 1e-9)
+        subscriber_stats: dict[str, Any] = {}
+        for subscriber in self.all_subscribers():
+            average_ms = (
+                (subscriber.total_processing_time / subscriber.processed_count) * 1000
+                if subscriber.processed_count
+                else 0.0
+            )
+            subscriber_stats[subscriber.name] = {
+                "queue_depth": subscriber.queue.qsize(),
+                "queue_max_size": self._queue_max_size,
+                "processed_count": subscriber.processed_count,
+                "average_processing_time_ms": round(average_ms, 3),
+                "last_processing_time_ms": round(subscriber.last_processing_time * 1000, 3),
+            }
+        return {
+            "uptime_seconds": round(uptime, 3),
+            "total_events_published": self._total_published,
+            "events_by_type": dict(self._published_by_type),
+            "events_per_second": round(self._total_published / uptime, 3),
+            "pending_count": self._pending_count,
+            "subscribers": subscriber_stats,
+        }
 
     async def drain(self, *, timeout: float = 5.0) -> bool:
         """Wait until every event published so far -- including events

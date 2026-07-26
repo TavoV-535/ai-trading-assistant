@@ -339,6 +339,68 @@ class ConfidenceWeightingSection(BaseModel):
     regime_opposed_penalty: float = 0.85
 
 
+class LearningSection(BaseModel):
+    """Tunable inputs for the Learning Engine (``app/learning/``,
+    Milestone 12) and the analytics services (``app/analytics/``) it
+    composes. ``enabled: false`` degrades gracefully (no coaching events
+    generated, no error) — the same pattern ``reflection.enabled``/
+    ``capital_protection.enabled`` already establish."""
+
+    enabled: bool = True
+    #: How many newly-*resolved* decisions accumulate before the Learning
+    #: Engine re-runs its full pattern review — "continuously analyze"
+    #: without re-running (and re-publishing) on every single decision.
+    review_interval_decisions: int = 5
+    #: Shared minimum sample size most pattern detectors require before
+    #: reporting anything -- avoids a CoachingEvent built on 1-2 data
+    #: points masquerading as a real pattern.
+    min_sample_size: int = 5
+    calibration_min_sample: int = 3
+    calibration_tolerance: float = 0.10
+    strategy_analytics_max_per_strategy: int = 1000
+    #: Bounded in-memory history the Learning Engine keeps of its own
+    #: (decisions, journal notes, risk events) for patterns no other
+    #: engine already tracks (time-of-day, day-of-week, overtrading,
+    #: emotional trend, ...) -- the durable, unbounded history always
+    #: remains queryable from event_log.
+    history_max_decisions: int = 2000
+    history_max_journal_notes: int = 500
+    history_max_risk_events: int = 2000
+    #: Consecutive same-outcome decisions (per symbol) that count as a
+    #: "streak" for the recurring-mistake/recurring-strength detectors.
+    streak_length: int = 2
+    overtrading_decisions_per_day: float = 10.0
+    undertrading_decisions_per_day: float = 0.5
+    #: Simple keyword heuristics for the "emotional trend" pattern --
+    #: deliberately not real sentiment analysis/NLP, just an honest,
+    #: transparent word list (documented in app/learning/engine.py).
+    positive_journal_keywords: list[str] = Field(
+        default_factory=lambda: ["confident", "disciplined", "calm", "patient", "focused"]
+    )
+    negative_journal_keywords: list[str] = Field(
+        default_factory=lambda: ["frustrated", "anxious", "fomo", "revenge", "impulsive", "angry", "panicked"]
+    )
+    #: UTC hour ranges (``[start, end)``) mapped to a labeled trading
+    #: session -- a documented approximation given no real exchange
+    #: calendar integration exists yet (see app/learning/engine.py).
+    session_hour_ranges: dict[str, list[int]] = Field(
+        default_factory=lambda: {
+            "Asia": [0, 8],
+            "London": [8, 13],
+            "US Regular Session": [13, 20],
+            "After-Hours": [20, 24],
+        }
+    )
+
+
+class MemoryIndexSection(BaseModel):
+    """Tunable inputs for the Memory Index (``app/memory/``, Milestone
+    12)."""
+
+    enabled: bool = True
+    max_entries: int = 5000
+
+
 class Settings(BaseSettings):
     """Root settings object. Instantiate via :func:`get_settings`."""
 
@@ -384,6 +446,8 @@ class Settings(BaseSettings):
     reflection: ReflectionSection = Field(default_factory=ReflectionSection)
     journal: JournalSection = Field(default_factory=JournalSection)
     capital_protection: CapitalProtectionSection = Field(default_factory=CapitalProtectionSection)
+    learning: LearningSection = Field(default_factory=LearningSection)
+    memory_index: MemoryIndexSection = Field(default_factory=MemoryIndexSection)
 
     @classmethod
     def settings_customise_sources(

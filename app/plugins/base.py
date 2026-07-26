@@ -25,19 +25,25 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.event_bus.bus import EventBus
 
 if TYPE_CHECKING:
     from app.aggregation.aggregator import EvidenceAggregator
+    from app.analytics.service import AnalyticsService
     from app.capital_protection.engine import CapitalProtectionEngine
     from app.context.engine import MarketContextEngine
     from app.journal.engine import TradingJournal
+    from app.knowledge_graph.graph import KnowledgeGraph
+    from app.knowledge_graph.query import KnowledgeGraphQueryEngine
+    from app.learning.engine import LearningEngine
     from app.marketdata.service import MarketDataService
+    from app.memory.index import MemoryIndex
     from app.plugins.registry import PluginRegistry
     from app.portfolio.engine import PortfolioIntelligenceEngine
     from app.reasoning.engine import ReasoningEngine
+    from app.replay.service import EventReplayService
     from app.strategy.engine import StrategyEngine
 
 HealthStatus = Literal["healthy", "degraded", "unhealthy"]
@@ -75,6 +81,67 @@ class PluginHealth(BaseModel):
     checked_at: datetime = datetime.now(timezone.utc)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class PluginCapabilities(BaseModel):
+    """What a plugin advertises it supports — the Milestone 12 "plugin
+    capability metadata" architectural recommendation: "plugins can
+    advertise supported evidence types, market types, symbols, and
+    timeframes without modifying core application code."
+
+    Purely declarative and purely optional. Nothing in the platform
+    enforces or filters against these fields automatically — a future
+    scanner, router, or command can read them (e.g. "only run this
+    plugin for crypto symbols," "only show plugins that produce News
+    evidence") without ever importing that plugin's module or special-
+    casing its name in core code. That's the point: capability-aware
+    behavior lives in whatever consumes ``capabilities()``, never in
+    ``PluginBase`` or the registry itself.
+
+    An empty list on any field means "unspecified," not "supports
+    nothing" — every plugin written before this milestone doesn't
+    override :meth:`PluginBase.capabilities`, so it reports every field
+    empty and :meth:`supports` treats that as "no declared restriction,"
+    matching everything. A plugin only narrows its surface by actually
+    populating a field.
+    """
+
+    evidence_types: list[str] = Field(
+        default_factory=list,
+        description="Evidence categories this plugin produces or consumes, e.g. 'Trend', 'News' (see app.evidence.schema.EvidenceCategory). Empty = unspecified.",
+    )
+    market_types: list[str] = Field(
+        default_factory=list,
+        description="Market types this plugin supports, e.g. 'equity', 'crypto', 'forex'. Empty = unspecified.",
+    )
+    symbols: list[str] = Field(
+        default_factory=list,
+        description="Specific symbols this plugin is scoped to, if any. Empty = unspecified (assume every symbol).",
+    )
+    timeframes: list[str] = Field(
+        default_factory=list,
+        description="Timeframes/intervals this plugin supports, e.g. '1m', '5m', '1d'. Empty = unspecified (assume every timeframe).",
+    )
+
+    def supports(
+        self,
+        *,
+        evidence_type: str | None = None,
+        market_type: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+    ) -> bool:
+        """True if this plugin's declared capabilities are compatible with
+        every criterion given (unspecified criteria and unspecified,
+        empty capability lists both count as a match — see class
+        docstring)."""
+        checks = (
+            (evidence_type, self.evidence_types),
+            (market_type, self.market_types),
+            (symbol, self.symbols),
+            (timeframe, self.timeframes),
+        )
+        return all(wanted is None or not declared or wanted in declared for wanted, declared in checks)
 
 
 @dataclass
@@ -122,6 +189,23 @@ class PluginContext:
     (most unit tests, and any future refactor, may not supply them), so
     any plugin reading them must handle ``None`` gracefully instead of
     assuming they're always present.
+
+    (Milestone 12) ``knowledge_graph``, ``knowledge_graph_query``,
+    ``analytics_service``, ``learning_engine``, ``memory_index``, and
+    ``event_replay_service`` extend this same narrow exception: ``/coach``
+    needs the Learning Engine's *current* coaching history and the
+    Knowledge Graph Query Layer's *current* explainable answers on demand,
+    not just whenever the next ``CoachingEvent`` happens to fire, exactly
+    the same shape of need ``/watchlist``/``/journal``/``/risk`` already
+    have for their own engines. All five are read-only query surfaces —
+    ``knowledge_graph_query.best_strategy_for_context()``,
+    ``analytics_service.strategy_stats()``,
+    ``learning_engine.review()``/``recent_coaching_events()``,
+    ``memory_index.retrieve()``, ``event_replay_service.replay_decision()``
+    — never a way to mutate history. The Learning Engine's own "never
+    alter historical data, only observe, reason, and publish new events"
+    rule from the Milestone 12 spec applies just as much here as it does
+    inside ``app/learning/engine.py`` itself.
     """
 
     event_bus: EventBus
@@ -136,6 +220,12 @@ class PluginContext:
     portfolio_engine: "PortfolioIntelligenceEngine | None" = None
     trading_journal: "TradingJournal | None" = None
     capital_protection_engine: "CapitalProtectionEngine | None" = None
+    knowledge_graph: "KnowledgeGraph | None" = None
+    knowledge_graph_query: "KnowledgeGraphQueryEngine | None" = None
+    analytics_service: "AnalyticsService | None" = None
+    learning_engine: "LearningEngine | None" = None
+    memory_index: "MemoryIndex | None" = None
+    event_replay_service: "EventReplayService | None" = None
 
 
 class PluginBase(ABC):
@@ -180,6 +270,17 @@ class PluginBase(ABC):
             category=self.category,
             description=(self.__doc__ or "").strip(),
         )
+
+    def capabilities(self) -> PluginCapabilities:
+        """Declares this plugin's supported evidence types, market types,
+        symbols, and timeframes (see :class:`PluginCapabilities`).
+        Deliberately concrete, not abstract: the default (everything
+        unspecified) means every plugin written before this milestone
+        keeps working identically without touching a single existing
+        plugin file — "without modifying core application code" applies
+        just as much to not modifying every existing plugin. A plugin
+        that wants to advertise real capabilities overrides this."""
+        return PluginCapabilities()
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<{type(self).__name__} name={self.name!r} version={self.version!r}>"

@@ -196,3 +196,31 @@ class EventLogRepository(Repository[EventLog]):
             if len(events) >= limit:
                 break
         return events
+
+    async def by_event_id(self, event_id: Any) -> EventLog | None:
+        """Fetches the one durable row whose own ``event_id`` (the UUID
+        every event carries, unique+indexed on this table) matches --
+        distinct from :meth:`get`, which looks up the internal
+        auto-increment primary key. This is what the Event Replay API
+        (``app/replay/``, Milestone 12) uses to fetch the ``DecisionRecorded``
+        row a ``decision_event_id`` on another event points back to."""
+        stmt = select(EventLog).where(EventLog.event_id == event_id).limit(1)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def related_to_decision(self, decision_event_id: Any, *, event_types: tuple[str, ...] | None = None, limit: int = 200) -> list[EventLog]:
+        """Every durable row whose payload carries this ``decision_event_id``
+        -- ``TradeOpened``/``TradeClosed``/``ReflectionGenerated``/
+        ``JournalCreated`` today, the only event types that reference one.
+        Python-side filtering, same documented deferred-scope reasoning as
+        :meth:`decision_records` (no dedicated indexed column for a JSON
+        field yet). Used by the Event Replay API to reconstruct a
+        complete historical decision."""
+        types = event_types or ("TradeOpened", "TradeClosed", "ReflectionGenerated", "JournalCreated")
+        target = str(decision_event_id)
+        matched: list[EventLog] = []
+        for event_type in types:
+            rows = await self.recent(event_type=event_type, limit=limit)
+            matched.extend(row for row in rows if row.payload.get("decision_event_id") == target)
+        matched.sort(key=lambda r: r.created_at)
+        return matched

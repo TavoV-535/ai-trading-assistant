@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from app.event_bus import DecisionRecorded, EventBus
+from app.event_bus.events import CoachingEvent, RiskEvent
+from app.journal.models import JournalNote
+from app.reflection.models import ReflectionRecord
 from app.timeline import DecisionRecord, DecisionTimeline
+from app.timeline.visualization import build_symbol_timeline
 
 
 def _decision(symbol: str, bar_index: int, **overrides) -> DecisionRecorded:
@@ -143,3 +148,76 @@ def test_decision_record_from_event_round_trips_every_field():
     assert record.outcome == "correct"
     assert record.outcome_price_change_pct == 1.5
     assert record.outcome_pending is False
+
+
+# ---------------------------------------------------------------- Milestone 12: Timeline Visualization Data
+
+
+def test_build_symbol_timeline_orders_every_entry_type_chronologically():
+    decision_event = _decision(
+        "NVDA", bar_index=0, outcome="correct", outcome_price_change_pct=1.5, outcome_pending=False,
+        timestamp=datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc),
+    )
+    decision = DecisionRecord.from_event(decision_event)
+
+    reflection = ReflectionRecord(
+        event_id=decision.event_id,
+        timestamp=datetime(2024, 1, 1, 0, 1, tzinfo=timezone.utc),
+        symbol="NVDA",
+        decision_event_id=decision.event_id,
+        reasoning="Bullish setup.",
+        lessons_learned="Entry timing was good.",
+    )
+    note = JournalNote(text="Felt confident.", author="tavion", added_at=datetime(2024, 1, 1, 0, 2, tzinfo=timezone.utc))
+    risk_event = RiskEvent(
+        source="test", timestamp=datetime(2024, 1, 1, 0, 3, tzinfo=timezone.utc),
+        symbol="NVDA", risk_type="daily_drawdown", severity="warning", value=1.0, profile_name="test", message="drawdown warning",
+    )
+    coaching_event = CoachingEvent(
+        source="test", timestamp=datetime(2024, 1, 1, 0, 4, tzinfo=timezone.utc),
+        pattern_type="strongest_strategy", title="Momentum Breakout is strongest", priority="high",
+    )
+
+    entries = build_symbol_timeline(
+        "NVDA",
+        decisions=[decision],
+        reflections=[reflection],
+        journal_notes=[note],
+        risk_events=[risk_event],
+        coaching_events=[coaching_event],
+    )
+
+    entry_types = [e.entry_type for e in entries]
+    # decision + evidence + strategy_match + outcome all share the decision's
+    # timestamp (t=0), so they sort stably before the later reflection/
+    # journal/risk_event/coaching_event entries -- never reordered relative
+    # to each other.
+    assert entry_types[:1] == ["decision"]
+    assert "evidence" in entry_types
+    assert "strategy_match" in entry_types
+    assert "outcome" in entry_types
+    assert entry_types[-4:] == ["reflection", "journal", "risk_event", "coaching_event"]
+    assert all(e.symbol == "NVDA" for e in entries)
+
+
+def test_build_symbol_timeline_is_a_pure_function_of_its_inputs():
+    """No engine access, no side effects -- calling it twice with the same
+    inputs produces an identical, independent result."""
+    decision = DecisionRecord.from_event(_decision("NVDA", bar_index=0))
+    first = build_symbol_timeline("NVDA", decisions=[decision])
+    second = build_symbol_timeline("NVDA", decisions=[decision])
+    assert [e.model_dump(mode="json") for e in first] == [e.model_dump(mode="json") for e in second]
+
+
+async def test_decision_timeline_timeline_for_symbol_delegates_to_build_symbol_timeline(settings, event_bus: EventBus):
+    timeline = DecisionTimeline(settings)
+    timeline.attach(event_bus)
+
+    await event_bus.publish(_decision("NVDA", bar_index=0))
+    await asyncio.sleep(0.05)
+
+    entries = timeline.timeline_for_symbol("NVDA")
+    assert len(entries) >= 1
+    assert entries[0].entry_type == "decision"
+    assert entries[0].symbol == "NVDA"
+    await event_bus.shutdown()

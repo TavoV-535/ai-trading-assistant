@@ -1016,6 +1016,186 @@ every risk type's latest severity/value/threshold, available profiles); a
 profile switching without code modifications" made reachable from Discord,
 confirming success or listing available names on an unknown one.
 
+## Trading Knowledge Graph + Explainable Query Layer (`app/knowledge_graph/`)
+
+Per PROJECT.md's Milestone 12 spec: "Instead of isolated records, the
+platform should understand relationships." Not a plugin — a core service,
+the same tier as the Decision Timeline or Capital Protection Engine.
+`KnowledgeGraph` (`app/knowledge_graph/graph.py`) builds a deterministic,
+bounded, in-memory graph purely by observing events already flowing over
+the bus (`DecisionRecorded`, `ReflectionGenerated`, `JournalCreated`,
+`RiskEvent`, `StrategyMatched`, `MarketContextUpdated`, `CoachingEvent`) —
+never by reaching into another engine's internals, and never any machine
+learning: every node/edge is added by an explicit, readable rule. `Decision`
+is deliberately the hub most other node types connect through — a
+Strategy, an Evidence line, a Market Context, and a Risk Profile are each
+linked to the Decision they were involved in, rather than directly to each
+other — so the spec's example chain (Strategy → Evidence → Market Context
+→ Risk Profile → Outcome) is answerable as a short walk through each
+Decision node, without a combinatorial explosion of direct edges between
+every pair of node types. Edges dedupe on `(source, target, relation)` —
+a strategy matching the same symbol again refreshes attributes rather than
+piling up duplicate edges — and the edge list is bounded
+(`_DEFAULT_MAX_EDGES = 20_000`, oldest evicted first) so a long-running
+deployment never grows this engine's in-memory footprint without limit;
+the durable, unbounded history always remains queryable from the database
+via `EventLogRepository`.
+
+`KnowledgeGraphQueryEngine` (`app/knowledge_graph/query.py`) is the
+"Explainable Query Layer" and the "Query Layer" from the Milestone 12
+architectural recommendations — "future AI providers, dashboards, APIs,
+and reports all consume the same explainable query interface." Every
+method is a plain, synchronous, read-only function of already-built graph
+state, returning a `QueryResult` whose `explanation` is a literal, ordered
+trace of the nodes/edges/aggregation steps that produced `answer` — never
+an opaque number. It answers the spec's example questions directly: which
+strategy performs best during a given market context (or macro event, via
+`best_strategies_during_market_event`), which evidence combinations produce
+the highest confidence vs. which actually perform best/worst, which market
+regimes consistently help or hurt, what recurring evidence pattern precedes
+losing/winning streaks, which indicators disagree most often, which
+evidence sources are most reliable, which market contexts generate false
+positives, and how confidence compares with actual outcomes. Where a query
+would otherwise duplicate a calculation another Milestone 12 service
+already owns, it *delegates* via optional constructor injection
+(`evidence_reliability`, `confidence_calibration`) rather than
+recomputing it — each such method still works standalone as a documented,
+graph-only approximation if that collaborator isn't wired, so the Query
+Layer is never a hard dependency on the rest of Milestone 12.
+
+## Learning Engine (`app/learning/`)
+
+Per PROJECT.md's Milestone 12 spec: continuously extract lessons from
+accumulated decisions, reflections, and journal entries — not a one-off
+report. `LearningEngine` subscribes to `DecisionRecorded` and
+`ReflectionGenerated`, and on each resolved decision runs a fixed panel of
+independent pattern detectors (recurring mistakes, recurring strengths,
+market-regime weaknesses, calibration drift, evidence-combination
+performance) over the already-built collaborators below, publishing a
+`CoachingEvent` per pattern found — never a duplicate calculation of what
+those collaborators already compute. Each detector is isolated: a broken
+detector logs and is skipped, never crashing the rest of the review (the
+same isolated-handler-failure discipline the Event Bus established in
+Milestone 1). `LearningEngine` never subscribes the Knowledge Graph or
+Analytics Service directly to anything new — it's composed from already-
+attached instances at construction time.
+
+### Confidence Calibration (`app/analytics/calibration.py`)
+
+`ConfidenceCalibrationService` buckets resolved decisions by their recorded
+confidence (10-point buckets) and tracks each bucket's actual win rate
+against its expected rate, incrementally as `DecisionRecorded` events
+arrive — never recomputed from scratch. `report()` returns a verdict per
+bucket (`overconfident`/`underconfident`/`well-calibrated`) plus an overall
+verdict, the single source of truth the Learning Engine, the Query Layer's
+`confidence_vs_actual_outcome`, and `/coach`'s `calibration` focus all read
+from — never three separate calculations of the same gap.
+
+### Strategy Analytics (`app/analytics/strategy_analytics.py`)
+
+`StrategyAnalyticsService` tracks each strategy's resolved win rate, sample
+size, and streak state incrementally from `DecisionRecorded`/
+`StrategyMatched`. `all()` and `for_strategy()` are the read surface every
+other Milestone 12 consumer (`AnalyticsService`, the Query Layer's
+strategy-ranking methods, `/coach`'s `strategies` focus) shares — one
+running calculation, not a recomputation per consumer.
+
+### Evidence Reliability Engine (`app/analytics/evidence_reliability.py`)
+
+`EvidenceReliabilityEngine` tracks, per evidence source, how often its
+recorded direction agreed with the eventual decision outcome — the same
+running-tally discipline as Strategy Analytics. `ranked()` is what the
+Query Layer's `most_reliable_evidence_sources` delegates to when wired
+(falling back to its own graph-only approximation otherwise, per the
+"never a hard dependency" rule above).
+
+### Analytics Service (`app/analytics/service.py`)
+
+`AnalyticsService` composes `StrategyAnalyticsService`,
+`EvidenceReliabilityEngine`, and `ConfidenceCalibrationService` behind one
+read-only facade — the shared "Analytics Service" the Milestone 12
+architectural recommendations call for, so a future dashboard or HTTP
+endpoint has one thing to depend on instead of three. It never recomputes
+anything its constituents already track; `test_analytics_service_is_reused_
+unmodified_across_multiple_consumers` structurally proves (via `ast.parse`)
+that the Learning Engine imports these services as composed collaborators,
+never reimplementing their logic.
+
+## Memory Index (`app/memory/index.py`)
+
+Per PROJECT.md's Milestone 12 spec: a fast, structured index over
+historical decisions, reflections, and journal entries for retrieval — not
+a search engine, not embeddings, a plain in-memory index keyed by symbol,
+strategy, market-context label, and outcome, kept current incrementally as
+`DecisionRecorded`/`ReflectionGenerated`/`JournalCreated` events arrive.
+`MemoryIndex.query()` supports filtering by any combination of those keys
+plus a result-count cap, giving `/coach` and future consumers fast recall
+without re-scanning the full event log or the Knowledge Graph.
+
+## Event Replay API (`app/replay/service.py`)
+
+Per PROJECT.md's Milestone 12 spec: reconstruct the complete causal chain
+behind any past decision — for debugging, review, and future Replay Mode.
+`EventReplayService` wraps the durable event log (`EventLogRepository`, not
+an in-memory structure — it must be able to answer for any decision ever
+recorded, not just what's still resident in the Knowledge Graph or
+Simulation Engine memory) and `replay_decision(decision_event_id)` returns
+the originating `DecisionRecorded`, its `ReflectionGenerated` (if any),
+every related `JournalCreated` note, its synthesized `TradeOpened`/
+`TradeClosed` pair (if any), and a chronologically ordered timeline of all
+of the above — an honest `None`/empty result for an unknown ID, never a
+crash. Deliberately **not** wired into `SimulationConfig`/`SimulationResult`
+— `SimulationEngine.run()` never persists to a database, so there is
+nothing for it to replay; only `app/core/bootstrap.py` constructs one, for
+live/database-backed operation.
+
+## Plugin capability metadata, performance metrics, and diagnostics
+
+Three small, cross-cutting Milestone 12 additions, none of which required
+modifying a single existing plugin:
+
+- **`PluginCapabilities`** (`app/plugins/base.py`) — an optional, declarative
+  model (`evidence_types`, `market_types`, `symbols`, `timeframes`, each
+  defaulting to `[]`, meaning "matches everything," never "matches
+  nothing") a plugin can override via a new concrete (non-abstract)
+  `capabilities()` method. `PluginRegistry.capabilities_all()` and
+  `.supporting(...)` are the registry-level query surface a future router
+  or dashboard can use to find plugins relevant to a given symbol/evidence
+  type/timeframe — every existing plugin still defaults to
+  `PluginCapabilities()` (matches everything) with zero code changes.
+- **Lightweight performance metrics** (`app/event_bus/bus.py`) — each
+  `_Subscriber` now tracks `processed_count`, `total_processing_time`, and
+  `last_processing_time`; `EventBus` tracks total published events and
+  published-by-type counts since start. Exposed via a new `async health()`
+  (degraded when any subscriber's queue is nearly full), `diagnostics()`
+  (subscriber/config shape), and `statistics()` (throughput, processing
+  time, queue depth) — and a new `/metrics` FastAPI endpoint
+  (`app/core/app.py`) surfaces `EventBus.statistics()`.
+- **`health()`/`diagnostics()`/`statistics()` on every new Milestone 12
+  engine** — `KnowledgeGraph`, `KnowledgeGraphQueryEngine`, `LearningEngine`,
+  `MemoryIndex`, and `EventReplayService` all expose the same three-method
+  shape every core engine here already does (`CapitalProtectionEngine`,
+  the Event Bus, ...) — consistent, predictable introspection regardless of
+  which milestone introduced the engine.
+
+## `/coach` Discord command (`plugins/commands/coach/`)
+
+The Discord surface for the Learning Engine and Analytics Service. With no
+`focus` argument it renders a compact summary touching all of the spec's
+coaching capabilities in one message; a `focus` argument
+(`summary`/`events`/`mistakes`/`strengths`/`calibration`/`strategies`/
+`risk`/`trend` — manually validated against a fixed tuple, since
+`CommandOption` is string-only with no built-in enum/choice support) deep-
+dives one section using full `CoachingEvent` field detail. Reads
+`context.learning_engine`/`context.analytics_service` and degrades
+gracefully to an ephemeral message if either isn't wired — the same
+graceful-degradation pattern `/journal` and `/risk` already established.
+Uses `ACTION_REGISTRY.buttons_for(["refresh", "dismiss"], target="coach")`;
+the pre-existing `"coach"` action key in `app/discord/actions.py`
+intentionally stays on its generic placeholder handler, since button
+callbacks only receive `(interaction, target)`, never a `PluginContext` —
+the same documented limitation `/journal`'s button already accepts.
+
 ## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
 
 A strategy is **pure declarative YAML**, never Python — `plugins/strategies/

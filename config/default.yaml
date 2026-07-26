@@ -317,3 +317,47 @@ capital_protection:
       symbol_limit_pct: 8.0
       max_consecutive_losses: 4
       max_leverage: null
+
+learning:
+  # The Learning Engine (app/learning/, Milestone 12) -- continuously
+  # analyzes historical Decision Timeline / Trading Journal / Reflection /
+  # Capital Protection / Strategy Match / Market Context history to
+  # identify recurring behavioral patterns and publish CoachingEvents. It
+  # never alters historical data -- only observes, reasons, and publishes
+  # new events. false degrades gracefully (no coaching events, no error),
+  # the same pattern reflection.enabled/capital_protection.enabled
+  # establish.
+  enabled: true
+  # How many newly-resolved decisions accumulate before the engine
+  # re-runs its full pattern review.
+  review_interval_decisions: 5
+  min_sample_size: 5
+  calibration_min_sample: 3
+  calibration_tolerance: 0.10
+  strategy_analytics_max_per_strategy: 1000
+  history_max_decisions: 2000
+  history_max_journal_notes: 500
+  history_max_risk_events: 2000
+  streak_length: 2
+  overtrading_decisions_per_day: 10.0
+  undertrading_decisions_per_day: 0.5
+  # Simple keyword heuristics for the "emotional trend" pattern --
+  # deliberately not real sentiment analysis/NLP.
+  positive_journal_keywords: [confident, disciplined, calm, patient, focused]
+  negative_journal_keywords: [frustrated, anxious, fomo, revenge, impulsive, angry, panicked]
+  # UTC hour ranges mapped to a labeled trading session -- a documented
+  # approximation given no real exchange calendar integration exists yet.
+  session_hour_ranges:
+    Asia: [0, 8]
+    London: [8, 13]
+    US Regular Session: [13, 20]
+    After-Hours: [20, 24]
+
+memory_index:
+  # The Memory Index (app/memory/, Milestone 12) -- lets future AI
+  # providers retrieve only relevant historical information instead of
+  # scanning the full database. Provider-agnostic, local-first; supports
+  # semantic retrieval later without changing the rest of the
+  # architecture (see app/memory/index.py).
+  enabled: true
+  max_entries: 5000

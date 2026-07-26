@@ -308,9 +308,13 @@ whatever the next event happens to publish. For exactly this case,
 `PluginContext` carries several additional, optional references:
 `context.evidence_aggregator`, `context.reasoning_engine`,
 `context.strategy_engine`, `context.market_data_service`,
-`context.plugin_registry`, `context.context_engine`, and
-`context.portfolio_engine` (all default to `None` — handle that
-gracefully, most unit tests won't supply them).
+`context.plugin_registry`, `context.context_engine`,
+`context.portfolio_engine`, `context.trading_journal`,
+`context.capital_protection_engine`, and — new as of Milestone 12 —
+`context.knowledge_graph`, `context.knowledge_graph_query`,
+`context.analytics_service`, `context.learning_engine`,
+`context.memory_index`, and `context.event_replay_service` (all default
+to `None` — handle that gracefully, most unit tests won't supply them).
 
 ```python
 async def execute(self, ctx: CommandContext) -> CommandResponse:

@@ -10,15 +10,16 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-11 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-12 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
 `/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
 + Discord Action Registry, the External Intelligence Platform +
 Market Context Engine + Confidence Weighting Framework, the
 Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine,
 the Unified Simulation Engine + Decision Timeline, the Unified
-Trading Journal + Reflection Engine, and the Capital Protection Engine +
-Adaptive Risk Profile system.**
+Trading Journal + Reflection Engine, the Capital Protection Engine +
+Adaptive Risk Profile system, and the Learning Engine + Trading Knowledge
+Graph + AI Coach.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -90,8 +91,21 @@ Coach to independently consume. A parallel Adaptive Risk Profile system
 (`app/capital_protection/profiles.py`) defines five built-in profiles
 (Conservative, Swing Trader, Day Trader, Scalper, Prop Firm) plus runtime
 Custom Profiles, switchable live via `/risk profile:<name>` with zero code
-changes (Milestone 11). See [`docs/MILESTONES.md`](./docs/MILESTONES.md)
-for what's done and what's next.
+changes (Milestone 11); and now the platform learns from its own history —
+a Trading Knowledge Graph (`app/knowledge_graph/`) builds a deterministic,
+explainable graph of every decision, strategy, evidence pattern, market
+context, and outcome purely from events already on the bus, answerable
+through an Explainable Query Layer whose every answer traces back to
+concrete nodes and counts, never an opaque number; a Learning Engine
+(`app/learning/`) continuously runs pattern detectors over that graph plus
+a new shared Analytics Service (Confidence Calibration, Strategy Analytics,
+Evidence Reliability), publishing coaching insights the moment a pattern
+emerges; a Memory Index gives fast recall over historical decisions,
+reflections, and journal entries; an Event Replay API reconstructs the
+full causal chain behind any past decision; and a new `/coach [focus]`
+command puts all of it in Discord (Milestone 12). See
+[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
+next.
 
 ## Quick start (Docker — recommended)
 
@@ -116,6 +130,7 @@ curl http://localhost:8000/plugins
 curl http://localhost:8000/strategies
 curl http://localhost:8000/scanners
 curl http://localhost:8000/watchlist
+curl http://localhost:8000/metrics
 ```
 
 In Discord, try `/ping`, `/help`, `/scan` (what the Scanner Engine is
@@ -124,11 +139,14 @@ Intelligence Layer's ranked, prioritized view of every configured symbol),
 `/journal SYMBOL` (the Trading Journal's enriched decision history —
 empty in live mode today, since nothing yet publishes `DecisionRecorded`
 outside a Simulation Engine run; see `docs/ARCHITECTURE.md`'s "Trading
-Journal" section), and `/risk [profile]` (the Capital Protection Engine's
+Journal" section), `/risk [profile]` (the Capital Protection Engine's
 current status with no argument, or switches the active Risk Profile when
 given one — also empty of real risk events in live mode today for the same
 reason `/journal` is, since nothing yet publishes `DecisionRecorded`
-outside a Simulation Engine run) — the reference scanner watches NVDA/AAPL/TSLA against
+outside a Simulation Engine run), and `/coach [focus]` (the Learning
+Engine + Knowledge Graph's coaching summary, or a deep-dive into one
+focus area — likewise empty until a Simulation Engine run or live
+operation has produced some resolved decisions) — the reference scanner watches NVDA/AAPL/TSLA against
 the bundled
 synthetic-random-walk data provider by default (the same three symbols
 `portfolio.watchlist` tracks out of the box), so `/analyze NVDA` and
@@ -175,7 +193,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-455 tests, ~95% coverage of `app/` as of Milestone 11. Live Discord gateway
+548 tests, ~95% coverage of `app/` as of Milestone 12. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -207,10 +225,15 @@ app/
   reflection/   # Reflection Engine — automatic structured post-trade analysis per resolved decision (not a plugin itself)
   journal/      # Trading Journal — enriches Decision Timeline records with reflections/notes/screenshots (not a plugin itself)
   capital_protection/ # Capital Protection Engine + Adaptive Risk Profile system — continuously-evolving capital-preservation risk state, never blocks trades (not a plugin itself)
+  knowledge_graph/ # Trading Knowledge Graph + Explainable Query Layer — deterministic, explainable graph over decisions/strategies/evidence/context/outcomes (not a plugin itself)
+  learning/     # Learning Engine — continuous pattern detectors over the Analytics Service + Knowledge Graph, publishes CoachingEvent (not a plugin itself)
+  analytics/    # Confidence Calibration + Strategy Analytics + Evidence Reliability, composed behind one Analytics Service (not a plugin itself)
+  memory/       # Memory Index — fast structured recall over decisions/reflections/journal entries (not a plugin itself)
+  replay/       # Event Replay API — reconstructs the full causal chain behind any past decision (not a plugin itself)
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
-  commands/     # ping/, analyze/, scan/, watchlist/, journal/, risk/
+  commands/     # ping/, analyze/, scan/, watchlist/, journal/, risk/, coach/
   market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
   scanners/     # core/ (reference watchlist scanner)
   intelligence/ # news/, earnings/, macro/ (External Intelligence Platform reference plugins)

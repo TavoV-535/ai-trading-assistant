@@ -28,12 +28,23 @@ in-memory state and the event log.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.event_bus.bus import EventBus
-from app.event_bus.events import DecisionRecorded
+from app.event_bus.events import CoachingEvent, DecisionRecorded, RiskEvent
 from app.logging import get_logger
 from app.timeline.models import DecisionRecord
+from app.timeline.visualization import TimelineEntry, build_symbol_timeline
+
+if TYPE_CHECKING:
+    # Type-only: importing these at module level closes a circular import
+    # (app.journal / app.reflection both import back into app.timeline at
+    # module load time -- see app/timeline/visualization.py's docstring for
+    # the full cycle). `from __future__ import annotations` above already
+    # makes every annotation in this file a lazily-evaluated string, so the
+    # TYPE_CHECKING guard costs nothing at runtime.
+    from app.journal.models import JournalNote
+    from app.reflection.models import ReflectionRecord
 
 log = get_logger(__name__)
 
@@ -99,3 +110,31 @@ class DecisionTimeline:
 
     def symbols(self) -> list[str]:
         return sorted(self._by_symbol.keys())
+
+    def timeline_for_symbol(
+        self,
+        symbol: str,
+        *,
+        reflections: list[ReflectionRecord] = (),
+        journal_notes: list[JournalNote] = (),
+        risk_events: list[RiskEvent] = (),
+        coaching_events: list[CoachingEvent] = (),
+        limit: int | None = None,
+    ) -> list[TimelineEntry]:
+        """The Milestone 12 "Timeline Visualization Data" surface — a
+        unified, chronologically ordered view of this symbol's decisions
+        plus whatever else the caller already fetched from the
+        Reflection Engine / Trading Journal / Capital Protection Engine /
+        Learning Engine (all optional, all read-only inputs — this method
+        never reaches into those engines itself). See
+        ``app/timeline/visualization.py`` for the pure composition
+        function this delegates to; no dashboard dependency is
+        introduced here or there."""
+        return build_symbol_timeline(
+            symbol,
+            decisions=self.for_symbol(symbol, limit=limit),
+            reflections=list(reflections),
+            journal_notes=list(journal_notes),
+            risk_events=list(risk_events),
+            coaching_events=list(coaching_events),
+        )

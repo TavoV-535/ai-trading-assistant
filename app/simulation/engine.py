@@ -79,6 +79,10 @@ from uuid import UUID, uuid4
 
 from app.aggregation.aggregator import EvidenceAggregator
 from app.aggregation.models import AggregateSnapshot
+from app.analytics.calibration import ConfidenceCalibrationService
+from app.analytics.evidence_reliability import EvidenceReliabilityEngine
+from app.analytics.service import AnalyticsService
+from app.analytics.strategy_analytics import StrategyAnalyticsService
 from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
@@ -88,8 +92,12 @@ from app.evidence.formatting import format_evidence_line
 from app.evidence.schema import FUNDAMENTAL_CATEGORIES
 from app.intelligence.plugin import IntelligencePlugin
 from app.journal.engine import TradingJournal
+from app.knowledge_graph.graph import KnowledgeGraph
+from app.knowledge_graph.query import KnowledgeGraphQueryEngine
+from app.learning.engine import LearningEngine
 from app.logging import get_logger
 from app.marketdata.service import MarketDataService
+from app.memory.index import MemoryIndex
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
@@ -189,6 +197,47 @@ class SimulationEngine:
         capital_protection_engine = CapitalProtectionEngine(settings, clock=clock)
         capital_protection_engine.attach(event_bus)
 
+        # Milestone 12's intelligence layer -- the exact same classes
+        # app.core.bootstrap constructs for live operation (see that
+        # module's comment block), so a simulation run's Learning Engine
+        # discovers behavioral patterns and its Knowledge Graph answers
+        # explainable queries identically to live operation, over
+        # whatever DecisionRecorded/ReflectionGenerated/JournalCreated/
+        # RiskEvent/StrategyMatched/MarketContextUpdated this run
+        # produces. No Event Replay API here -- this engine never
+        # persists to a database (see module docstring); a caller
+        # replays a simulated decision by querying this run's own
+        # `decision_timeline` instead.
+        confidence_calibration = ConfidenceCalibrationService(settings)
+        confidence_calibration.attach(event_bus)
+        evidence_reliability = EvidenceReliabilityEngine(settings)
+        evidence_reliability.attach(event_bus)
+        strategy_analytics = StrategyAnalyticsService(settings)
+        strategy_analytics.attach(event_bus)
+        analytics_service = AnalyticsService(
+            strategy_analytics=strategy_analytics,
+            evidence_reliability=evidence_reliability,
+            confidence_calibration=confidence_calibration,
+        )
+        knowledge_graph = KnowledgeGraph(settings)
+        knowledge_graph.attach(event_bus)
+        knowledge_graph_query = KnowledgeGraphQueryEngine(
+            knowledge_graph,
+            evidence_reliability=evidence_reliability,
+            confidence_calibration=confidence_calibration,
+        )
+        learning_engine = LearningEngine(
+            settings,
+            strategy_analytics=strategy_analytics,
+            evidence_reliability=evidence_reliability,
+            confidence_calibration=confidence_calibration,
+            knowledge_graph_query=knowledge_graph_query,
+            clock=clock,
+        )
+        learning_engine.attach(event_bus)
+        memory_index = MemoryIndex(settings)
+        memory_index.attach(event_bus)
+
         alerts: list[AlertGenerated] = []
 
         async def _capture_alert(event: AlertGenerated) -> None:
@@ -206,6 +255,11 @@ class SimulationEngine:
             portfolio_engine=portfolio_engine,
             trading_journal=trading_journal,
             capital_protection_engine=capital_protection_engine,
+            knowledge_graph=knowledge_graph,
+            knowledge_graph_query=knowledge_graph_query,
+            analytics_service=analytics_service,
+            learning_engine=learning_engine,
+            memory_index=memory_index,
         )
         # Phase 1, exactly like app.core.bootstrap: market data providers
         # first, so the Market Data Abstraction Layer can be built from them.
@@ -341,6 +395,11 @@ class SimulationEngine:
             reflection_engine=reflection_engine,
             trading_journal=trading_journal,
             capital_protection_engine=capital_protection_engine,
+            knowledge_graph=knowledge_graph,
+            knowledge_graph_query=knowledge_graph_query,
+            analytics_service=analytics_service,
+            learning_engine=learning_engine,
+            memory_index=memory_index,
             plugin_registry=plugin_registry,
             market_data_service=market_data_service,
             alerts=alerts,

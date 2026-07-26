@@ -2,8 +2,10 @@ from app.event_bus.bus import EventBus, Subscription
 from app.event_bus.events import (
     ACTION_DIRECTIONS,
     EVENT_TYPES,
+    PATTERN_TYPES,
     AlertGenerated,
     BacktestFinished,
+    CoachingEvent,
     CommandFailed,
     CommandInvoked,
     DailySummary,
@@ -61,6 +63,8 @@ __all__ = [
     "DecisionRecorded",
     "ACTION_DIRECTIONS",
     "ReflectionGenerated",
+    "CoachingEvent",
+    "PATTERN_TYPES",
     "CommandInvoked",
     "CommandFailed",
 ]

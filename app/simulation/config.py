@@ -15,13 +15,18 @@ from typing import Any, Literal
 from uuid import UUID
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.analytics.service import AnalyticsService
 from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
 from app.event_bus.bus import EventBus
 from app.event_bus.events import AlertGenerated
 from app.journal.engine import TradingJournal
+from app.knowledge_graph.graph import KnowledgeGraph
+from app.knowledge_graph.query import KnowledgeGraphQueryEngine
+from app.learning.engine import LearningEngine
 from app.marketdata.service import MarketDataService
+from app.memory.index import MemoryIndex
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
@@ -84,6 +89,11 @@ class SimulationResult:
     reflection_engine: ReflectionEngine
     trading_journal: TradingJournal
     capital_protection_engine: CapitalProtectionEngine
+    knowledge_graph: KnowledgeGraph
+    knowledge_graph_query: KnowledgeGraphQueryEngine
+    analytics_service: AnalyticsService
+    learning_engine: LearningEngine
+    memory_index: MemoryIndex
     plugin_registry: PluginRegistry
     market_data_service: MarketDataService
     alerts: list[AlertGenerated] = field(default_factory=list)

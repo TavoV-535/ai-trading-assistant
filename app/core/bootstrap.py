@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.analytics.calibration import ConfidenceCalibrationService
+from app.analytics.evidence_reliability import EvidenceReliabilityEngine
+from app.analytics.service import AnalyticsService
+from app.analytics.strategy_analytics import StrategyAnalyticsService
 from app.capital_protection.engine import CapitalProtectionEngine
 from app.config import get_settings
 from app.context.engine import MarketContextEngine
@@ -22,14 +26,19 @@ from app.db.event_logger import attach_event_logger
 from app.discord.bot import TradingBot
 from app.event_bus.bus import EventBus
 from app.journal.engine import TradingJournal
+from app.knowledge_graph.graph import KnowledgeGraph
+from app.knowledge_graph.query import KnowledgeGraphQueryEngine
+from app.learning.engine import LearningEngine
 from app.logging import configure_logging, get_logger
 from app.marketdata.service import MarketDataService
+from app.memory.index import MemoryIndex
 from app.plugins.registry import PluginRegistry
 from app.portfolio.engine import PortfolioIntelligenceEngine
 from app.prioritization.engine import EventPrioritizationEngine
 from app.reasoning.engine import ReasoningEngine
 from app.reasoning.providers.claude_provider import ClaudeProvider
 from app.reflection.engine import ReflectionEngine
+from app.replay.service import EventReplayService
 from app.strategy.engine import StrategyEngine
 from app.timeline.engine import DecisionTimeline
 
@@ -149,6 +158,58 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     capital_protection_engine = CapitalProtectionEngine(settings)
     capital_protection_engine.attach(event_bus)
 
+    # Milestone 12 -- the platform's intelligence layer. Every piece here
+    # only *observes* history through the Event Bus (or, for the Event
+    # Replay API, the durable event log) and *reasons* about it -- never
+    # alters historical data, never blocks a trade or a command. Built in
+    # dependency order: the three Analytics collaborators first (each
+    # independently subscribes to DecisionRecorded/TradeClosed/RiskEvent),
+    # then the Knowledge Graph, then the composed read-only facades
+    # (AnalyticsService, KnowledgeGraphQueryEngine) that the Learning Engine
+    # and future commands (/coach) consume instead of recalculating
+    # anything themselves -- "no duplicated calculations" applied the same
+    # way it already is inside app/analytics/ and app/knowledge_graph/.
+    confidence_calibration = ConfidenceCalibrationService(settings)
+    confidence_calibration.attach(event_bus)
+    evidence_reliability = EvidenceReliabilityEngine(settings)
+    evidence_reliability.attach(event_bus)
+    strategy_analytics = StrategyAnalyticsService(settings)
+    strategy_analytics.attach(event_bus)
+    analytics_service = AnalyticsService(
+        strategy_analytics=strategy_analytics,
+        evidence_reliability=evidence_reliability,
+        confidence_calibration=confidence_calibration,
+    )
+
+    knowledge_graph = KnowledgeGraph(settings)
+    knowledge_graph.attach(event_bus)
+    knowledge_graph_query = KnowledgeGraphQueryEngine(
+        knowledge_graph,
+        evidence_reliability=evidence_reliability,
+        confidence_calibration=confidence_calibration,
+    )
+
+    learning_engine = LearningEngine(
+        settings,
+        strategy_analytics=strategy_analytics,
+        evidence_reliability=evidence_reliability,
+        confidence_calibration=confidence_calibration,
+        knowledge_graph_query=knowledge_graph_query,
+    )
+    learning_engine.attach(event_bus)
+
+    memory_index = MemoryIndex(settings)
+    memory_index.attach(event_bus)
+
+    # Event Replay API reads the durable event log directly (via
+    # `database`, already constructed above) rather than any in-memory
+    # engine -- it's the one Milestone 12 piece with no simulation-side
+    # counterpart, since SimulationEngine.run() never persists to a
+    # database (see app/simulation/engine.py's module docstring); replaying
+    # a simulated decision is already possible by querying that run's own
+    # in-memory DecisionTimeline instead.
+    event_replay_service = EventReplayService(database)
+
     # Command plugins (e.g. /analyze) may need to read the *current*
     # evidence/reasoning state synchronously, not just react to events — see
     # PluginContext's docstring for the scope of this exception.
@@ -162,6 +223,12 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         portfolio_engine=portfolio_engine,
         trading_journal=trading_journal,
         capital_protection_engine=capital_protection_engine,
+        knowledge_graph=knowledge_graph,
+        knowledge_graph_query=knowledge_graph_query,
+        analytics_service=analytics_service,
+        learning_engine=learning_engine,
+        memory_index=memory_index,
+        event_replay_service=event_replay_service,
     )
 
     # Phase 1: market data provider plugins load first, in isolation. The
@@ -216,6 +283,12 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         reflection_engine=reflection_engine,
         trading_journal=trading_journal,
         capital_protection_engine=capital_protection_engine,
+        knowledge_graph=knowledge_graph,
+        knowledge_graph_query=knowledge_graph_query,
+        analytics_service=analytics_service,
+        learning_engine=learning_engine,
+        memory_index=memory_index,
+        event_replay_service=event_replay_service,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,
