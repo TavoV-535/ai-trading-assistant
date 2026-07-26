@@ -221,3 +221,99 @@ journal:
   # Bounded notes retained per entry in memory -- the durable record in
   # event_log is never trimmed.
   max_notes_per_entry: 50
+
+capital_protection:
+  # The Capital Protection Engine (app/capital_protection/, Milestone 11)
+  # -- continuously monitors capital preservation and publishes structured
+  # RiskEvents; it never blocks a trade or command directly. false
+  # degrades gracefully (no risk evaluation, no error), the same pattern
+  # reflection.enabled already establishes.
+  enabled: true
+  # The synthetic notional capital baseline every drawdown/position-sizing
+  # calculation is computed against -- no real broker balance exists yet.
+  starting_equity: 100000.0
+  # Which of the profiles below is currently active. Switching this (or
+  # calling RiskProfileRegistry.set_active()/the /risk command's `profile`
+  # parameter at runtime) changes every threshold the engine evaluates
+  # against -- a config change or a live command, never a code change.
+  active_profile: swing_trader
+  correlation_window_bars: 60
+  correlation_min_samples: 10
+  trailing_drawdown_window_trades: 20
+  concentration_window_trades: 20
+  evaluation_interval_ticks: 20
+  # symbol -> sector, for the sector_concentration risk type. A symbol
+  # with no entry here is grouped under "Unknown" -- always computable.
+  symbol_sectors:
+    NVDA: Technology
+    AAPL: Technology
+    TSLA: Consumer Discretionary
+  # The Adaptive Risk Profile system (PROJECT.md's Milestone 11 spec):
+  # five built-in profiles below, each a plain, addressable config entry
+  # -- adding a sixth ("Custom Profile") means adding another entry here,
+  # or calling RiskProfileRegistry.register() at runtime, never editing
+  # the Capital Protection Engine itself.
+  profiles:
+    conservative:
+      name: conservative
+      max_daily_loss_pct: 1.5
+      max_total_drawdown_pct: 5.0
+      max_position_size_pct: 2.0
+      max_concurrent_positions: 3
+      max_portfolio_exposure_pct: 10.0
+      correlation_limit: 0.5
+      sector_limit_pct: 15.0
+      symbol_limit_pct: 5.0
+      max_consecutive_losses: 3
+      max_leverage: null
+    swing_trader:
+      name: swing_trader
+      max_daily_loss_pct: 3.0
+      max_total_drawdown_pct: 10.0
+      max_position_size_pct: 5.0
+      max_concurrent_positions: 5
+      max_portfolio_exposure_pct: 20.0
+      correlation_limit: 0.7
+      sector_limit_pct: 30.0
+      symbol_limit_pct: 10.0
+      max_consecutive_losses: 5
+      max_leverage: null
+    day_trader:
+      name: day_trader
+      max_daily_loss_pct: 4.0
+      max_total_drawdown_pct: 12.0
+      max_position_size_pct: 7.0
+      max_concurrent_positions: 6
+      max_portfolio_exposure_pct: 30.0
+      correlation_limit: 0.75
+      sector_limit_pct: 35.0
+      symbol_limit_pct: 12.0
+      max_consecutive_losses: 6
+      max_leverage: null
+    scalper:
+      name: scalper
+      max_daily_loss_pct: 2.5
+      max_total_drawdown_pct: 8.0
+      max_position_size_pct: 3.0
+      max_concurrent_positions: 10
+      max_portfolio_exposure_pct: 25.0
+      correlation_limit: 0.6
+      sector_limit_pct: 25.0
+      symbol_limit_pct: 8.0
+      max_consecutive_losses: 8
+      max_leverage: null
+    prop_firm:
+      # Mirrors real prop-firm evaluation rules (e.g. a 5% max daily loss
+      # / 10% max total loss style challenge) -- what prop_firm_compliance
+      # (RiskEvent.risk_type) evaluates against.
+      name: prop_firm
+      max_daily_loss_pct: 5.0
+      max_total_drawdown_pct: 10.0
+      max_position_size_pct: 5.0
+      max_concurrent_positions: 3
+      max_portfolio_exposure_pct: 15.0
+      correlation_limit: 0.5
+      sector_limit_pct: 20.0
+      symbol_limit_pct: 8.0
+      max_consecutive_losses: 4
+      max_leverage: null

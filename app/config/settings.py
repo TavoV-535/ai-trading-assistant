@@ -87,6 +87,13 @@ class DiscordSection(BaseModel):
     #: degradation pattern as a missing DISCORD_BOT_TOKEN or
     #: ANTHROPIC_API_KEY, not a crash.
     alert_channel_id: str | None = None
+    #: Minimum real-world seconds between two proactively-delivered
+    #: RiskEvent messages sharing the same (risk_type, symbol) -- the
+    #: Capital Protection Engine (Milestone 11) evaluates continuously, so
+    #: without this a risk dimension stuck at "critical" would repost on
+    #: every single evaluation. Mirrors prioritization.alert_cooldown_seconds'
+    #: purpose for a different event type.
+    risk_alert_cooldown_seconds: float = 300.0
 
 
 class MarketDataSection(BaseModel):
@@ -251,6 +258,72 @@ class JournalSection(BaseModel):
     max_notes_per_entry: int = 50
 
 
+class RiskProfileConfig(BaseModel):
+    """One named Risk Profile's configurable operating constraints, per
+    PROJECT.md's Milestone 11 Adaptive Risk Profile spec. Consumed
+    dynamically by the Capital Protection Engine
+    (``app/capital_protection/``) via ``RiskProfileRegistry`` — adding,
+    editing, or switching a profile is a config change (or a runtime
+    ``register()`` call for a Custom Profile), never a code change."""
+
+    name: str
+    max_daily_loss_pct: float = 3.0
+    max_total_drawdown_pct: float = 10.0
+    max_position_size_pct: float = 5.0
+    max_concurrent_positions: int = 5
+    max_portfolio_exposure_pct: float = 20.0
+    #: Maximum acceptable pairwise price-return correlation between two
+    #: symbols the engine currently has recent exposure to, ``[0, 1]``.
+    correlation_limit: float = 0.7
+    sector_limit_pct: float = 30.0
+    symbol_limit_pct: float = 10.0
+    #: Not in the spec's literal per-profile field list, but required to
+    #: give the "Consecutive losses" risk type (explicitly listed as a
+    #: risk category to evaluate) a configurable threshold to evaluate
+    #: against — config-driven, not hardcoded, exactly like every other
+    #: limit on this model.
+    max_consecutive_losses: int = 5
+    #: A deliberate, honest placeholder for a future leverage/margin
+    #: capability — ``None`` means "not applicable" (a spot/cash-account
+    #: assumption today), never fabricated. See ``RiskEvent``'s
+    #: ``margin_utilization``/``broker_constraints`` risk types.
+    max_leverage: float | None = None
+
+
+class CapitalProtectionSection(BaseModel):
+    """Tunable inputs for the Capital Protection Engine
+    (``app/capital_protection/``, Milestone 11). ``enabled: false``
+    degrades gracefully (no risk evaluation, no error) — the same pattern
+    ``reflection.enabled`` already establishes."""
+
+    enabled: bool = True
+    #: The synthetic notional capital baseline every equity-curve
+    #: calculation (drawdown, position sizing) is computed against — no
+    #: real broker balance exists yet (see ``RiskEvent``'s docstring).
+    starting_equity: float = 100_000.0
+    active_profile: str = "swing_trader"
+    profiles: dict[str, RiskProfileConfig] = Field(default_factory=dict)
+    #: Rolling window (in ``MarketDataUpdated`` ticks) of price history
+    #: kept per symbol for the ``correlated_exposure`` risk type's Pearson
+    #: correlation calculation.
+    correlation_window_bars: int = 60
+    correlation_min_samples: int = 10
+    #: Rolling window (in closed trades) used for ``trailing_drawdown``
+    #: and for the three concentration risk types
+    #: (position/symbol/sector).
+    trailing_drawdown_window_trades: int = 20
+    concentration_window_trades: int = 20
+    #: Throttles how often the market-data-driven risk types
+    #: (``correlated_exposure``) and the two broker placeholders are
+    #: re-evaluated — once every this-many ``MarketDataUpdated`` ticks,
+    #: rather than every single tick, to avoid an event storm.
+    evaluation_interval_ticks: int = 20
+    #: symbol -> sector, for the ``sector_concentration`` risk type. A
+    #: symbol with no entry here is grouped under ``"Unknown"`` — always
+    #: computable, never a crash on missing data.
+    symbol_sectors: dict[str, str] = Field(default_factory=dict)
+
+
 class ConfidenceWeightingSection(BaseModel):
     """Tunable inputs for the Confidence Weighting Framework
     (``app/aggregation/weighting.py``). ``source_reliability`` maps an
@@ -310,6 +383,7 @@ class Settings(BaseSettings):
     simulation: SimulationSection = Field(default_factory=SimulationSection)
     reflection: ReflectionSection = Field(default_factory=ReflectionSection)
     journal: JournalSection = Field(default_factory=JournalSection)
+    capital_protection: CapitalProtectionSection = Field(default_factory=CapitalProtectionSection)
 
     @classmethod
     def settings_customise_sources(

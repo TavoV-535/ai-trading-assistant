@@ -136,6 +136,38 @@ independently by the **Trading Journal** (`app/journal/`), which enriches
 abstraction", "Unified Simulation Engine", "Decision Timeline",
 "Reflection Engine", and "Trading Journal" below.
 
+As of Milestone 11, the same `DecisionRecorded` stream also drives a third
+independent subscriber, sitting alongside the Reflection Engine and
+Trading Journal rather than gating anything upstream of them:
+
+```
+DecisionRecorded ──────────────────────────────────────┐
+                                                          ├──► Reflection Engine → ReflectionGenerated
+                                                          ├──► Trading Journal
+                                                          └──► Capital Protection Engine
+                                                                 (synthesizes TradeOpened/TradeClosed,
+                                                                  evaluates continuously evolving
+                                                                  equity/drawdown/concentration/
+                                                                  correlation state)
+                                                                        │
+                                                                  RiskEvent (12 canonical types)
+                                                                        │
+                                          ┌─────────────────────────────┼─────────────────────────────┐
+                                          │                             │                             │
+                              proactive Discord alert            /risk [profile]              (future: Journal,
+                              (independent subscription,        (query engine.status()          Portfolio Intelligence,
+                               not routed through the             or switch active                Reflection Engine,
+                               Event Prioritization Engine)        Risk Profile)                    AI Coach)
+```
+
+The **Capital Protection Engine** (`app/capital_protection/`) never blocks
+a trade or a command — it only ever publishes structured `RiskEvent`s for
+independent downstream consumers to react to, per the spec's explicit
+requirement. An **Adaptive Risk Profile** system
+(`app/capital_protection/profiles.py`) configures the engine's thresholds
+dynamically, switchable live via `/risk profile:<name>` with zero code
+changes. See "Capital Protection Engine" below.
+
 ## Event Bus (`app/event_bus/`)
 
 `EventBus` is an async pub/sub broker. Every subscriber gets its own bounded
@@ -882,6 +914,107 @@ against the symbol's most recent entry (or as a general note). Reads
 `context.trading_journal` directly — the same documented, narrow,
 read-only `PluginContext` exception `/analyze` and `/watchlist` already
 use.
+
+## Capital Protection Engine (`app/capital_protection/`)
+
+Per PROJECT.md's Milestone 11 spec: continuously monitor capital
+preservation across live trading, simulation, replay, and future broker
+integrations — a Capital Protection Engine, not a traditional Risk Engine.
+Not a plugin — a core service, the same tier as the Decision Timeline,
+Reflection Engine, and Trading Journal. Risk is modeled as **continuously
+evolving state**, not simple threshold checks: a running equity curve
+(`_equity`, `_peak_equity`, a day-boundary-aware `_daily_start_equity`, a
+bounded trailing-equity window), a consecutive-losses streak counter, a
+bounded recently-closed-trades window, and a bounded per-symbol price
+history are all incrementally updated as events arrive — never recomputed
+from scratch.
+
+`CapitalProtectionEngine` subscribes to `DecisionRecorded` and
+`MarketDataUpdated`, exactly like every other event-driven core engine
+here. No real broker/position-open/close event exists yet, so the engine
+**synthesizes** the standard `TradeOpened`/`TradeClosed` vocabulary itself
+from each observed non-neutral `DecisionRecorded` — never asking the
+Simulation Engine to change its Milestone 9 "publish exactly once, fully
+resolved" invariant. Position sizing is a documented placeholder
+(`notional = equity * profile.max_position_size_pct% * confidence%`), tying
+size to both the active Risk Profile's ceiling and the triggering
+decision's own confidence — not a claim of real position-sizing
+sophistication. A still-`outcome_pending` decision (rare — only
+force-flushed unresolved decisions at a simulation run's end) gets an open
+position with no matching close, which is the *only* source of genuinely
+non-zero `open_portfolio_risk` given current event-producer limits, and is
+documented as such rather than fabricated.
+
+Evaluates and publishes a structured `RiskEvent` (`app/event_bus/events.py`
+— the spec's 12 canonical `RISK_TYPES`: daily/total/trailing drawdown,
+consecutive losses, open portfolio risk, position/sector/symbol
+concentration, correlated exposure, margin utilization, broker constraints,
+prop firm compliance) after every decision-driven evaluation cycle.
+Severity is graduated, not binary — `ratio >= 1.0` → `critical`,
+`ratio >= 0.7` → `warning`, else `info` — the same function used uniformly
+across every non-binary risk type; `prop_firm_compliance` alone uses a
+binary pass/fail (mirroring how real prop firms actually evaluate). Margin
+utilization and broker constraints are honestly published as
+`applicable=False` placeholders — no margin/leverage or broker integration
+exists yet — never a fabricated value. `position_concentration`/
+`symbol_concentration`/`sector_concentration` are computed over a rolling
+window of recently **closed** trades rather than literal concurrent open
+positions (which are rare by construction, per the synthesis behavior
+above) — a distinct, real, and documented risk lens: "how concentrated has
+recent trading activity been." `correlated_exposure` uses real Pearson
+correlation math over a bounded per-symbol rolling price history, restricted
+to symbols the engine has actual recent trading exposure to, gated by a
+minimum sample count — not a hardcoded or simulated correlation figure.
+
+The engine **never directly blocks a trade or a command** — it only
+publishes `RiskEvent`s to the Event Bus for independent downstream
+consumers (Discord, the Trading Journal, Portfolio Intelligence, the
+Reflection Engine, and a future AI Coach) to react to however they choose.
+`TradingBot` (`app/discord/bot.py`) subscribes to `RiskEvent` directly —
+deliberately **not** routed through the Event Prioritization Engine, since
+its default `watchlist_only=True` gating would silently suppress every
+portfolio-wide (`symbol=None`) risk alert — delivering `warning`/`critical`
+severities to `discord.alert_channel_id` with a per-`(risk_type, symbol)`
+cooldown, exactly like `AlertGenerated`'s existing delivery path but
+independent of it.
+
+### Adaptive Risk Profile system (`app/capital_protection/profiles.py`)
+
+`RiskProfileRegistry` wraps `settings.capital_protection` and is the
+mechanism behind "the Capital Protection Engine should consume these
+profiles dynamically without requiring code changes." Five built-in
+profiles ship in `config/default.yaml` — Conservative, Swing Trader
+(the default), Day Trader, Scalper, and Prop Firm (modeled on real
+prop-firm rules: 5% max daily loss / 10% max total drawdown) — each
+configuring maximum daily loss, maximum total drawdown, maximum position
+size, maximum concurrent positions, maximum portfolio exposure,
+correlation/sector/symbol limits, and a future leverage limit (always
+`null` today — no margin system exists). `set_active_profile()` switches
+the active profile by name at runtime (a logged no-op on an unknown name,
+never raising); `register()` adds or replaces a profile at runtime — the
+"Custom Profiles" requirement, no config-file-edit-plus-restart needed.
+`current()` gracefully falls back to a safe default profile if the
+registry is ever empty, never raising.
+
+### Live + simulation wiring
+
+`app/core/bootstrap.py` constructs and attaches a `CapitalProtectionEngine`
+for live operation; `app/simulation/engine.py`'s `run()` constructs and
+attaches its own clock-injected instance of the exact same class, returned
+on `SimulationResult.capital_protection_engine` — the literal mechanism
+behind "simulation and live modes using the same Capital Protection
+Engine." `PluginContext.capital_protection_engine` gives command plugins
+the same documented, narrow, read-only-query exception `trading_journal`/
+`portfolio_engine` already establish; its one write-shaped exception,
+`set_active_profile()`, never blocks anything or edits a limit in code —
+only switches which already-configured profile is active.
+
+`/risk [profile]` (`plugins/commands/risk/`) is the Discord surface: no
+`profile` renders the full `CapitalProtectionStatus` snapshot (equity,
+every risk type's latest severity/value/threshold, available profiles); a
+`profile` argument switches the active Risk Profile live — "Demonstrate
+profile switching without code modifications" made reachable from Discord,
+confirming success or listing available names on an unknown one.
 
 ## Strategy Engine (`app/strategy/`, `plugins/strategies/`)
 

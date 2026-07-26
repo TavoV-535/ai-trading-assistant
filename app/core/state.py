@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.db.base import Database
 from app.event_bus.bus import EventBus
@@ -40,6 +41,7 @@ class AppState:
     decision_timeline: DecisionTimeline
     reflection_engine: ReflectionEngine
     trading_journal: TradingJournal
+    capital_protection_engine: CapitalProtectionEngine
     project_root: Path
     discord_bot: "TradingBot | None" = None
     discord_task: "asyncio.Task[None] | None" = None

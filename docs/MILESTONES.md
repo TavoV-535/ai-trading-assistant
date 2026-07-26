@@ -799,6 +799,159 @@ a silent assumption.
   round-trips through `JournalCreated` and appears on the next read (see
   the Milestone 10 completion report for the transcript).
 
+## Milestone 11 — Capital Protection Engine + Adaptive Risk Profiles ✅ complete
+
+- **`RiskEvent`** (`app/event_bus/events.py`) — repurposed from the unused
+  Milestone 1 scaffolding event `RiskWarning`, the same "reuse the intended
+  vocabulary slot" decision Milestone 10 made for `JournalCreated`:
+  `risk_type`, `symbol` (`None` for portfolio-wide types), `severity`
+  (`info`/`warning`/`critical`), `value`, `threshold`, `applicable` (`False`
+  for the honest margin/broker placeholders), `profile_name`, `message`,
+  `context`. **`RISK_TYPES`** — a new public constant, the spec's 12
+  canonical strings: `daily_drawdown`, `total_drawdown`,
+  `trailing_drawdown`, `consecutive_losses`, `open_portfolio_risk`,
+  `position_concentration`, `sector_concentration`, `symbol_concentration`,
+  `correlated_exposure`, `margin_utilization`, `broker_constraints`,
+  `prop_firm_compliance`.
+- **`TradeOpened`/`TradeClosed`** (`app/event_bus/events.py`) — both
+  pre-existing unused Milestone 1 scaffolding events, extended with
+  `decision_event_id: UUID | None = None`. Synthesized by the Capital
+  Protection Engine from each observed `DecisionRecorded` — never by the
+  Simulation Engine directly, preserving Milestone 9's "an event is
+  recorded exactly once, fully resolved" invariant. `TradeOpened` always
+  publishes for a non-neutral decision; `TradeClosed` publishes immediately
+  after, in the same handler call, only if the triggering decision's
+  `outcome_pending is False`.
+- **Capital Protection Engine** (`app/capital_protection/engine.py`, new
+  core module, not a plugin) — `CapitalProtectionEngine` subscribes to
+  `DecisionRecorded` and `MarketDataUpdated`. Maintains continuously
+  evolving state — a running equity curve, day-boundary-aware daily
+  start equity, a bounded trailing-equity window, a consecutive-losses
+  streak counter, a bounded recently-closed-trades window, and a bounded
+  per-symbol price history — never recomputing from scratch. Publishes a
+  full round of `RiskEvent`s (all 12 `RISK_TYPES`) after every
+  decision-driven evaluation cycle, using a graduated severity function
+  (`ratio >= 1.0` → critical, `>= 0.7` → warning, else info) uniformly
+  except for `prop_firm_compliance`'s binary pass/fail. Real Pearson
+  correlation math (`_pearson`, `_returns`, `_max_correlated_pair`) over a
+  bounded rolling price history, restricted to symbols with actual recent
+  trading exposure, gated by a minimum sample count — verified live that
+  perfectly co-moving price series produce correlation ≈1.0.
+  `position_concentration`/`symbol_concentration`/`sector_concentration`
+  are computed over a rolling window of recently *closed* trades (since
+  concurrently open positions are rare by construction given the synthesis
+  behavior above) — a distinct, real, documented risk lens. Synthetic
+  position sizing (`notional = equity * profile.max_position_size_pct% *
+  confidence%`) is a documented placeholder tying size to both the active
+  Risk Profile's ceiling and the decision's own confidence. Margin
+  utilization and broker constraints are honestly published as
+  `applicable=False` — no margin/leverage or broker integration exists yet.
+  The engine **never blocks a trade or a command** — only ever publishes to
+  the Event Bus.
+- **Adaptive Risk Profile system** (`app/capital_protection/profiles.py`,
+  new module) — `RiskProfile = RiskProfileConfig` (the actual pydantic
+  schema lives in `app/config/settings.py` alongside every other config
+  section, per this codebase's convention). `RiskProfileRegistry` wraps
+  `settings.capital_protection`: `names()`, `get()`, `active_name`,
+  `current()` (graceful fallback to a safe default if the registry is ever
+  empty — never raises), `set_active(name) -> bool` (logged no-op on an
+  unknown name — the "profile switching without code modifications"
+  mechanism), `register(profile, *, activate=False)` (adds/replaces a
+  Custom Profile at runtime — the "Custom Profiles" requirement, no
+  config-file-edit-plus-restart needed).
+- **`CapitalProtectionSection`/`RiskProfileConfig` config**
+  (`app/config/settings.py`, `config/default.yaml`) — `enabled`,
+  `starting_equity`, `active_profile`, correlation/trailing/concentration
+  window settings, `symbol_sectors` (symbols with no entry group under
+  `"Unknown"`, never a crash), and five built-in profiles: Conservative,
+  Swing Trader (the default), Day Trader, Scalper, and Prop Firm (modeled
+  on real prop-firm rules — 5% max daily loss / 10% max total drawdown).
+  Each configures maximum daily loss, maximum total drawdown, maximum
+  position size, maximum concurrent positions, maximum portfolio exposure,
+  correlation/sector/symbol limits, `max_consecutive_losses` (added beyond
+  the spec's literal list, to give the required "Consecutive losses" risk
+  type a configurable threshold), and `max_leverage` (always `null` today —
+  an honest future-leverage placeholder, no margin system exists).
+- **`EventLogRepository.risk_events()`** (`app/db/repository.py`) — mirrors
+  `decision_records()`/`reflections()`/`journal_notes()` exactly:
+  reconstructs `RiskEvent` objects straight from already-persisted
+  `event_log` rows, with optional `symbol`/`risk_type` filtering, no
+  dedicated table.
+- **Live + Simulation wiring** — `app/core/bootstrap.py` constructs and
+  attaches a `CapitalProtectionEngine` for live operation;
+  `app/simulation/engine.py`'s `run()` constructs and attaches its own
+  clock-injected instance of the exact same class, returned on
+  `SimulationResult.capital_protection_engine` — literally
+  "simulation and live modes using the same Capital Protection Engine."
+- **Independent, direct Discord delivery** (`app/discord/bot.py`) —
+  `TradingBot` gets a second, independent `RiskEvent` subscription,
+  deliberately **not** routed through the Event Prioritization Engine
+  (whose default `watchlist_only=True` would silently suppress every
+  portfolio-wide `symbol=None` risk alert — discovered by reading
+  `app/prioritization/engine.py`'s gating logic). Delivers
+  `warning`/`critical` severities to `discord.alert_channel_id` with a new
+  per-`(risk_type, symbol)` cooldown (`discord.risk_alert_cooldown_seconds`).
+- **`PluginContext.capital_protection_engine`** (`app/plugins/base.py`) —
+  the same documented, narrow, read-only-query exception pattern as
+  `trading_journal`/`portfolio_engine`. Its one write-shaped exception,
+  `set_active_profile()`, never blocks anything or edits a limit in code —
+  only switches which already-configured profile is active.
+- **`/risk [profile]`** (`plugins/commands/risk/`) — no `profile` renders
+  the full `CapitalProtectionStatus` snapshot (equity, all `RISK_TYPES`
+  entries including symbol-scoped concentration keys, margin/broker
+  placeholders shown as "n/a", available profiles); a `profile` argument
+  switches the active Risk Profile live, confirming success or listing
+  available names on an unknown one — "profile switching without code
+  modifications" made reachable from Discord.
+- 45 new tests: 8 Adaptive Risk Profile (`tests/test_risk_profiles.py` —
+  built-in profile loading, active-profile defaulting, switching,
+  unknown-name no-op, Custom Profile registration/activation/replacement,
+  empty-registry fallback), 23 Capital Protection Engine
+  (`tests/test_capital_protection_engine.py` — continuously evolving
+  equity/drawdown state, day-boundary rollover, consecutive-losses streak,
+  graduated severity, all 12 `RISK_TYPES`, real Pearson correlation
+  verified against perfectly co-moving price series, prop-firm binary
+  compliance, position-capped sizing), 1 new
+  `EventLogRepository.risk_events()` durable-reconstruction test
+  (`tests/test_db.py`), 4 `/risk` command tests
+  (`tests/test_risk_command.py` — graceful degradation, read mode, profile
+  switch success/unknown-name), and 5 full Milestone 11 pipeline
+  integration tests (`tests/test_milestone11_pipeline_integration.py`) —
+  real `RiskEvent`s observed flowing over the real Event Bus during a
+  simulation, live profile switching without code modification, a
+  structural proof that `app.core.bootstrap` and `app.simulation.engine`
+  both construct the identical `CapitalProtectionEngine` class, `/risk`
+  retrieving a real status snapshot via the actual `RiskPlugin`, and an
+  import-guardrail test proving the Capital Protection Engine never
+  imports another core engine's `engine` module directly (and no other
+  core engine imports it back). One pre-existing test
+  (`test_bot_registers_help_ping_analyze_and_scan_commands`) updated to
+  expect the new `risk` command alongside the existing five. A real bug
+  was caught and fixed by this suite: `_daily_date` was initialized to
+  `None`, so day-one's `_maybe_roll_day()` stamped "start of day" equity
+  *after* that same cycle's own trade had already moved it, silently
+  zeroing out day-one's real daily drawdown — fixed by initializing it
+  directly from pre-trade starting equity. 455 tests passing total, 95%
+  coverage of `app/` (`app/capital_protection/engine.py` at 95%,
+  `profiles.py`/`models.py` at 100%), ruff clean. (One pre-existing,
+  unrelated flaky test — `test_milestone8_pipeline_integration.py`'s use of
+  synchronous `lambda` handlers subscribed directly to the Event Bus, which
+  expects `async def` handlers — surfaces intermittently only under
+  coverage instrumentation's slowdown; it passes reliably standalone and
+  `app/event_bus/bus.py` has zero changes this milestone, so it's a
+  pre-existing test-design issue, not a Milestone 11 regression.)
+- Live-verified end to end: a real `SimulationEngine.run()` produces
+  `RiskEvent`s over the real Event Bus as `DecisionRecorded` events arrive;
+  `capital_protection_engine.set_active_profile("prop_firm")` immediately
+  changes every subsequent evaluation's thresholds with no restart, no
+  config edit, no code change; `app.core.bootstrap` and
+  `app.simulation.engine` both construct
+  `app.capital_protection.engine.CapitalProtectionEngine` — literally the
+  same class; `/risk` — via the real, unmodified `RiskPlugin` — renders
+  equity, all risk types' latest severity/value, and available profiles,
+  and a follow-up `/risk profile:scalper` switches and is reflected
+  immediately on the next read.
+
 ## Proposed order for what's next
 
 These map directly to `PROJECT.md` sections. Suggested build order —
@@ -812,11 +965,12 @@ open to reordering based on what you want to see working first:
    blocker for anything else. A real News/Earnings/Macro provider (a real
    API instead of the synthetic reference plugins) is the same story for
    `settings.intelligence`-driven plugins.
-2. **AI Coach**, then **Risk Engine**, **Replay Mode**, **Optimization
-   Engine**, **Personal Statistics** — roughly in that order. The Trading
-   Journal and Reflection Engine (Milestone 10) already give the AI Coach
-   its entire input surface (`ReflectionGenerated`'s lessons_learned/
-   potential_improvements, the Journal's enriched per-symbol history) — the
+2. **AI Coach**, then **Replay Mode**, **Optimization Engine**, **Personal
+   Statistics** — roughly in that order. The Trading Journal and Reflection
+   Engine (Milestone 10), plus the Capital Protection Engine's `RiskEvent`
+   stream (Milestone 11), already give the AI Coach its entire input
+   surface (`ReflectionGenerated`'s lessons_learned/potential_improvements,
+   the Journal's enriched per-symbol history, structured risk state) — the
    Coach becomes a new subscriber to events that already flow, not a new
    data pipeline. These are also what would give the Action Registry's
    Chart / News / History / Backtest / Watch / Replay / Coach actions real
@@ -824,20 +978,24 @@ open to reordering based on what you want to see working first:
    `ACTION_REGISTRY.register_handler()` call once the backing system
    exists. (`Watch` already has a real system behind it as of Milestone 8
    — `/watchlist`; `Journal` already has a real command — `/journal` — as
-   of Milestone 10, though the pre-existing Action Registry *button*
-   itself still intentionally uses the placeholder, since button handlers
-   don't receive a `PluginContext` — see `plugins/commands/journal/plugin.py`'s
-   docstring.)
+   of Milestone 10; `/risk` similarly as of Milestone 11 — though the
+   pre-existing Action Registry *button*s still intentionally use the
+   placeholder, since button handlers don't receive a `PluginContext` —
+   see `plugins/commands/journal/plugin.py`'s docstring.)
 3. **More External Intelligence Platform sources** — SEC filings, insider
    activity, FDA approvals, M&A, buybacks, dividends, stock splits — each
    is a new folder under `plugins/intelligence/` against the same
    `IntelligencePlugin` contract Milestone 7 established, no core changes.
-4. **Real broker execution / paper trading** — the honest placeholder this
-   milestone left in place (`JournalCreated.trade_id`,
-   `JournalEntry.broker_execution`, always `None` today) becomes real, and
-   "a completed trade" in the Reflection Engine's trigger condition
-   (currently a resolved `DecisionRecorded`) can be redefined against an
-   actual filled order.
+4. **Real broker execution / paper trading** — the honest placeholders left
+   in place across Milestones 10-11 (`JournalCreated.trade_id`,
+   `JournalEntry.broker_execution`, always `None`; the Capital Protection
+   Engine's `margin_utilization`/`broker_constraints` `RiskEvent`s, always
+   `applicable=False`; `RiskProfileConfig.max_leverage`, always `null`)
+   become real, "a completed trade" in the Reflection Engine's trigger
+   condition (currently a resolved `DecisionRecorded`) can be redefined
+   against an actual filled order, and the Capital Protection Engine's
+   synthesized `TradeOpened`/`TradeClosed` events can instead be produced
+   directly by the broker integration.
 
 Say the word and the next milestone starts. Nothing here commits to a
 specific order — just say which one you want first.

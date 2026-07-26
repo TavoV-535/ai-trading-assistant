@@ -79,6 +79,7 @@ from uuid import UUID, uuid4
 
 from app.aggregation.aggregator import EvidenceAggregator
 from app.aggregation.models import AggregateSnapshot
+from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
 from app.event_bus.bus import EventBus
@@ -177,6 +178,16 @@ class SimulationEngine:
         reflection_engine.attach(event_bus)
         trading_journal = TradingJournal(settings, clock=clock)
         trading_journal.attach(event_bus)
+        # Capital Protection Engine (Milestone 11) -- the exact same class
+        # app.core.bootstrap constructs for live operation, clock-injected
+        # here so every RiskEvent/TradeOpened/TradeClosed timestamp and
+        # every day-boundary calculation (daily_drawdown) stays consistent
+        # with the simulated timeline. This one class, driven by two
+        # different call sites (here and bootstrap.py), is what
+        # "simulation and live modes using the same Capital Protection
+        # Engine" means structurally.
+        capital_protection_engine = CapitalProtectionEngine(settings, clock=clock)
+        capital_protection_engine.attach(event_bus)
 
         alerts: list[AlertGenerated] = []
 
@@ -194,6 +205,7 @@ class SimulationEngine:
             context_engine=context_engine,
             portfolio_engine=portfolio_engine,
             trading_journal=trading_journal,
+            capital_protection_engine=capital_protection_engine,
         )
         # Phase 1, exactly like app.core.bootstrap: market data providers
         # first, so the Market Data Abstraction Layer can be built from them.
@@ -328,6 +340,7 @@ class SimulationEngine:
             decision_timeline=decision_timeline,
             reflection_engine=reflection_engine,
             trading_journal=trading_journal,
+            capital_protection_engine=capital_protection_engine,
             plugin_registry=plugin_registry,
             market_data_service=market_data_service,
             alerts=alerts,

@@ -134,19 +134,42 @@ class MacroEventOccurred(Event):
 
 
 class TradeOpened(Event):
+    """Published by the Capital Protection Engine (``app/capital_protection/``,
+    Milestone 11), synthesized from a ``DecisionRecorded`` it observes on
+    the bus — the closest existing concept to "a trade" opening, since no
+    real broker/paper-trading execution system exists yet (the same
+    honest scope decision Milestones 9-10 already made for "a completed
+    trade" = a resolved ``DecisionRecorded``). ``quantity``/``entry_price``
+    are synthetic, sized against the active Risk Profile's
+    ``max_position_size_pct`` and the decision's own confidence — never a
+    real broker fill. ``decision_event_id`` links back to the triggering
+    ``DecisionRecorded`` for traceability."""
+
     symbol: str
     side: Literal["long", "short"]
     quantity: float
     entry_price: float
     strategy: str | None = None
     trade_id: UUID = Field(default_factory=uuid4)
+    decision_event_id: UUID | None = None
 
 
 class TradeClosed(Event):
+    """The other half of ``TradeOpened`` — published by the Capital
+    Protection Engine in the same handler call when the triggering
+    ``DecisionRecorded`` already carries a resolved outcome (the common
+    case, since the Simulation Engine only ever publishes a decision once
+    fully resolved — see ``app/simulation/engine.py``'s module docstring).
+    A decision that's still ``outcome_pending`` at the time it's observed
+    (a force-flushed, still-unresolved decision at simulation run end)
+    gets a ``TradeOpened`` with no matching ``TradeClosed`` — genuinely
+    still-open exposure, not fabricated."""
+
     symbol: str
     exit_price: float
     trade_id: UUID
     pnl: float | None = None
+    decision_event_id: UUID | None = None
 
 
 class PositionUpdated(Event):
@@ -216,10 +239,70 @@ class DailySummary(Event):
     trade_count: int | None = None
 
 
-class RiskWarning(Event):
-    rule: str
-    message: str
-    severity: Literal["info", "warning", "critical"] = "warning"
+#: The Capital Protection Engine's canonical risk vocabulary
+#: (``app/capital_protection/``, Milestone 11) — every ``RiskEvent.risk_type``
+#: is one of these twelve strings, per PROJECT.md's Milestone 11 spec. Lives
+#: here, not in the engine module, for the same reason ``ACTION_DIRECTIONS``
+#: does: it's part of ``RiskEvent``'s own wire vocabulary, not an
+#: implementation detail private to whichever engine happens to evaluate it.
+RISK_TYPES: tuple[str, ...] = (
+    "daily_drawdown",
+    "total_drawdown",
+    "trailing_drawdown",
+    "consecutive_losses",
+    "open_portfolio_risk",
+    "position_concentration",
+    "sector_concentration",
+    "symbol_concentration",
+    "correlated_exposure",
+    "margin_utilization",
+    "broker_constraints",
+    "prop_firm_compliance",
+)
+
+
+class RiskEvent(Event):
+    """Published by the Capital Protection Engine (``app/capital_protection/``,
+    Milestone 11) — one structured, continuously-evolving evaluation of a
+    single risk dimension (``risk_type``, one of ``RISK_TYPES``) against
+    the currently active Risk Profile. Repurposed from ``RiskWarning``, an
+    unused Milestone 1 scaffolding event never referenced anywhere in the
+    codebase — the same "reuse the intended vocabulary slot rather than
+    invent a new event name" decision Milestone 10 made for
+    ``JournalCreated``.
+
+    Per the Milestone 11 spec, the Capital Protection Engine "should never
+    directly block trades or commands" — this event is the *only* thing it
+    ever does: publish a structured fact so that Discord, the Trading
+    Journal, Portfolio Intelligence, the Reflection Engine, and a future AI
+    Coach can each independently decide what (if anything) to do about it,
+    purely through the Event Bus. Every evaluation is published, not just
+    breaches — ``severity="info"`` is itself meaningful "still healthy"
+    state, matching the spec's "risk should be modeled as continuously
+    evolving state rather than simple threshold checks."
+
+    ``symbol`` is ``None`` for portfolio-wide risk types (drawdown,
+    consecutive losses, open portfolio risk, prop firm compliance) and set
+    for symbol-scoped ones (position/symbol concentration). ``applicable``
+    is ``False`` only for ``margin_utilization``/``broker_constraints`` —
+    an honest, always-``False``-today placeholder for a future broker
+    integration (the same pattern as ``JournalEntry.broker_execution``),
+    never fabricated. ``threshold`` is the active profile's limit for this
+    risk type (``None`` for the two inapplicable placeholders).
+    ``context`` carries risk-type-specific supporting detail (e.g. the
+    correlated symbol pair and its coefficient for
+    ``correlated_exposure``) without needing a different event shape per
+    risk type."""
+
+    risk_type: str
+    symbol: str | None = None
+    severity: Literal["info", "warning", "critical"] = "info"
+    value: float = 0.0
+    threshold: float | None = None
+    applicable: bool = True
+    profile_name: str = ""
+    message: str = ""
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- commands (Discord)
@@ -528,7 +611,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         BacktestFinished,
         JournalCreated,
         DailySummary,
-        RiskWarning,
+        RiskEvent,
         EvidenceProduced,
         EvidenceAggregated,
         MarketContextUpdated,

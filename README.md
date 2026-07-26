@@ -10,14 +10,15 @@ Runs entirely on your own machine via Docker Compose.
 
 ## Status
 
-**Milestones 1-10 complete: Core Architecture, Discord Bot Skeleton, the
+**Milestones 1-11 complete: Core Architecture, Discord Bot Skeleton, the
 Indicator Library, the Strategy Engine + Evidence Aggregator,
 `/analyze SYMBOL`, the Scanner Engine + Market Data Abstraction Layer
 + Discord Action Registry, the External Intelligence Platform +
 Market Context Engine + Confidence Weighting Framework, the
 Portfolio & Watchlist Intelligence Layer + Event Prioritization Engine,
-the Unified Simulation Engine + Decision Timeline, and the Unified
-Trading Journal + Reflection Engine.**
+the Unified Simulation Engine + Decision Timeline, the Unified
+Trading Journal + Reflection Engine, and the Capital Protection Engine +
+Adaptive Risk Profile system.**
 
 The event bus, plugin contract, evidence object, reasoning engine,
 database layer, and local deployment are built (Milestone 1); the Discord
@@ -74,9 +75,23 @@ outcome, lessons learned, potential improvements) purely from the event
 bus, and a new Trading Journal (`app/journal/`) independently enriches —
 never duplicates — the Decision Timeline's own records with that
 reflection plus user notes and screenshot placeholders, retrievable via a
-new `/journal SYMBOL` command (Milestone 10). See
-[`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's done and what's
-next.
+new `/journal SYMBOL` command (Milestone 10); and now capital preservation
+is modeled as continuously evolving state, not a threshold check — a new
+Capital Protection Engine (`app/capital_protection/`) observes every
+`DecisionRecorded` (synthesizing the standard `TradeOpened`/`TradeClosed`
+vocabulary itself), maintains a running equity curve, and publishes
+structured `RiskEvent`s for daily/total/trailing drawdown, consecutive
+losses, open portfolio risk, position/symbol/sector concentration, real
+Pearson-correlated exposure, and prop-firm compliance (margin/broker
+constraints are honestly reported as not-yet-applicable placeholders) —
+never blocking a trade or command, only publishing to the event bus for
+Discord, the Trading Journal, Portfolio Intelligence, and the future AI
+Coach to independently consume. A parallel Adaptive Risk Profile system
+(`app/capital_protection/profiles.py`) defines five built-in profiles
+(Conservative, Swing Trader, Day Trader, Scalper, Prop Firm) plus runtime
+Custom Profiles, switchable live via `/risk profile:<name>` with zero code
+changes (Milestone 11). See [`docs/MILESTONES.md`](./docs/MILESTONES.md)
+for what's done and what's next.
 
 ## Quick start (Docker — recommended)
 
@@ -106,10 +121,14 @@ curl http://localhost:8000/watchlist
 In Discord, try `/ping`, `/help`, `/scan` (what the Scanner Engine is
 currently watching), `/analyze SYMBOL`, `/watchlist` (the Portfolio
 Intelligence Layer's ranked, prioritized view of every configured symbol),
-and `/journal SYMBOL` (the Trading Journal's enriched decision history —
+`/journal SYMBOL` (the Trading Journal's enriched decision history —
 empty in live mode today, since nothing yet publishes `DecisionRecorded`
 outside a Simulation Engine run; see `docs/ARCHITECTURE.md`'s "Trading
-Journal" section) — the reference scanner watches NVDA/AAPL/TSLA against
+Journal" section), and `/risk [profile]` (the Capital Protection Engine's
+current status with no argument, or switches the active Risk Profile when
+given one — also empty of real risk events in live mode today for the same
+reason `/journal` is, since nothing yet publishes `DecisionRecorded`
+outside a Simulation Engine run) — the reference scanner watches NVDA/AAPL/TSLA against
 the bundled
 synthetic-random-walk data provider by default (the same three symbols
 `portfolio.watchlist` tracks out of the box), so `/analyze NVDA` and
@@ -156,7 +175,7 @@ pytest                              # full suite
 pytest --cov=app --cov-report=term-missing   # with coverage
 ```
 
-429 tests, ~97% coverage of `app/` as of Milestone 10. Live Discord gateway
+455 tests, ~95% coverage of `app/` as of Milestone 11. Live Discord gateway
 connection can't be exercised in CI/sandboxes — see
 [`docs/MILESTONES.md`](./docs/MILESTONES.md) for what's unit tested vs.
 what needs verifying against a real Discord connection on your machine.
@@ -187,10 +206,11 @@ app/
   timeline/     # Decision Timeline — canonical historical record of every recorded decision (not a plugin itself)
   reflection/   # Reflection Engine — automatic structured post-trade analysis per resolved decision (not a plugin itself)
   journal/      # Trading Journal — enriches Decision Timeline records with reflections/notes/screenshots (not a plugin itself)
+  capital_protection/ # Capital Protection Engine + Adaptive Risk Profile system — continuously-evolving capital-preservation risk state, never blocks trades (not a plugin itself)
 plugins/        # actual plugins/strategies live here, auto-discovered — see docs/PLUGIN_GUIDE.md
   indicators/   # ema, sma, vwap, rsi, macd, atr, adx, bollinger, supertrend, obv, cci, ichimoku, donchian, volume_profile
   strategies/   # momentum_breakout/strategy.yaml (pure YAML, no Python)
-  commands/     # ping/, analyze/, scan/, watchlist/, journal/
+  commands/     # ping/, analyze/, scan/, watchlist/, journal/, risk/
   market_data/  # replay/ (CSV replay + synthetic random-walk reference provider)
   scanners/     # core/ (reference watchlist scanner)
   intelligence/ # news/, earnings/, macro/ (External Intelligence Platform reference plugins)

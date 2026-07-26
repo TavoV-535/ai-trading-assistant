@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.db import Database, EventLog, EventLogRepository, attach_event_logger
-from app.event_bus import DecisionRecorded, EventBus, JournalCreated, MarketDataUpdated, ReflectionGenerated
+from app.event_bus import DecisionRecorded, EventBus, JournalCreated, MarketDataUpdated, ReflectionGenerated, RiskEvent
 
 
 async def test_database_health_and_create_all(settings):
@@ -218,6 +218,61 @@ async def test_journal_notes_reconstructed_from_durable_event_log(settings, even
 
         all_notes = await repo.journal_notes()
         assert len(all_notes) == 3  # the screenshot-only event is excluded
+
+    await event_bus.shutdown()
+    await db.dispose()
+
+
+async def test_risk_events_reconstructed_from_durable_event_log(settings, event_bus: EventBus):
+    """Mirrors the decision_records/reflections/journal_notes repository
+    tests -- EventLogRepository.risk_events() reconstructs RiskEvent
+    objects straight from durable event_log rows, Milestone 11's Capital
+    Protection Engine needing no dedicated table either."""
+    db = Database(settings)
+    await db.create_all()
+    attach_event_logger(event_bus, db)
+
+    await event_bus.publish(
+        RiskEvent(
+            source="CapitalProtectionEngine",
+            risk_type="daily_drawdown",
+            symbol=None,
+            severity="warning",
+            value=2.5,
+            threshold=3.0,
+            profile_name="swing_trader",
+            message="Daily drawdown 2.50% (limit 3.00%).",
+        )
+    )
+    await event_bus.publish(
+        RiskEvent(
+            source="CapitalProtectionEngine",
+            risk_type="symbol_concentration",
+            symbol="NVDA",
+            severity="critical",
+            value=55.0,
+            threshold=10.0,
+            profile_name="swing_trader",
+            message="Most-traded symbol is 55.00% of recent trading notional.",
+        )
+    )
+    await asyncio.sleep(0.1)
+
+    async with db.session() as session:
+        repo = EventLogRepository(session)
+
+        all_events = await repo.risk_events()
+        assert len(all_events) == 2
+
+        nvda_events = await repo.risk_events(symbol="NVDA")
+        assert len(nvda_events) == 1
+        assert nvda_events[0].risk_type == "symbol_concentration"
+        assert nvda_events[0].severity == "critical"
+
+        drawdown_events = await repo.risk_events(risk_type="daily_drawdown")
+        assert len(drawdown_events) == 1
+        assert drawdown_events[0].symbol is None
+        assert drawdown_events[0].value == 2.5
 
     await event_bus.shutdown()
     await db.dispose()

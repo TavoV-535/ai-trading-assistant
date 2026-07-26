@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.capital_protection.engine import CapitalProtectionEngine
 from app.config import get_settings
 from app.context.engine import MarketContextEngine
 from app.core.state import AppState
@@ -136,6 +137,18 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
     trading_journal = TradingJournal(settings)
     trading_journal.attach(event_bus)
 
+    # Capital Protection Engine (Milestone 11) -- the exact same class
+    # SimulationEngine.run() constructs (see app/simulation/engine.py),
+    # attached here for live operation. Continuously evaluates capital-
+    # preservation risk from whatever DecisionRecorded/MarketDataUpdated
+    # events actually flow; never blocks a trade or command, only
+    # publishes structured RiskEvents. Idle-but-attached in live mode
+    # today for the same honest reason DecisionTimeline/ReflectionEngine/
+    # TradingJournal are: nothing yet publishes DecisionRecorded from live
+    # market data (see those engines' comments above).
+    capital_protection_engine = CapitalProtectionEngine(settings)
+    capital_protection_engine.attach(event_bus)
+
     # Command plugins (e.g. /analyze) may need to read the *current*
     # evidence/reasoning state synchronously, not just react to events — see
     # PluginContext's docstring for the scope of this exception.
@@ -148,6 +161,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         context_engine=context_engine,
         portfolio_engine=portfolio_engine,
         trading_journal=trading_journal,
+        capital_protection_engine=capital_protection_engine,
     )
 
     # Phase 1: market data provider plugins load first, in isolation. The
@@ -201,6 +215,7 @@ async def bootstrap(settings: Any | None = None, *, project_root: Path | None = 
         decision_timeline=decision_timeline,
         reflection_engine=reflection_engine,
         trading_journal=trading_journal,
+        capital_protection_engine=capital_protection_engine,
         project_root=root,
         discord_bot=discord_bot,
         discord_task=discord_task,

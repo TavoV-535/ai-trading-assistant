@@ -15,6 +15,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from app.aggregation.aggregator import EvidenceAggregator
+from app.capital_protection.engine import CapitalProtectionEngine
 from app.context.engine import MarketContextEngine
 from app.core.clock import SimulatedClock
 from app.event_bus.bus import EventBus
@@ -82,6 +83,7 @@ class SimulationResult:
     decision_timeline: DecisionTimeline
     reflection_engine: ReflectionEngine
     trading_journal: TradingJournal
+    capital_protection_engine: CapitalProtectionEngine
     plugin_registry: PluginRegistry
     market_data_service: MarketDataService
     alerts: list[AlertGenerated] = field(default_factory=list)

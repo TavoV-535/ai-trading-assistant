@@ -16,6 +16,7 @@ entire integration step.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import discord
@@ -30,7 +31,7 @@ from app.discord.command_plugin import (
 )
 from app.discord.dispatch import CommandButton, CommandContext, CommandResponse, dispatch_command
 from app.event_bus.bus import EventBus
-from app.event_bus.events import AlertGenerated
+from app.event_bus.events import AlertGenerated, RiskEvent
 from app.logging import get_logger
 from app.plugins.registry import PluginRegistry
 
@@ -85,14 +86,30 @@ class TradingBot(discord.Client):
         self._event_bus = event_bus
         self._plugin_registry = plugin_registry
         self._registered_commands: dict[str, DiscordCommandPlugin] = {}
+        #: (risk_type, symbol-or-"") -> last time a RiskEvent with that key
+        #: was actually delivered -- the duplicate-suppression cooldown
+        #: (see ``discord.risk_alert_cooldown_seconds``). Real wall time,
+        #: not the Capital Protection Engine's own (possibly simulated)
+        #: clock -- this bot only ever runs live.
+        self._last_risk_alert_at: dict[tuple[str, str], datetime] = {}
         self._register_help_command()
-        # Proactive alert delivery -- the Event Prioritization Engine's
-        # AlertGenerated is the one event type meant to actually reach the
-        # user unprompted (everything else is command-driven, on demand).
-        # Subscribed here (construction time) rather than in setup_hook so
-        # an alert generated before the gateway connection is fully up is
-        # still queued and delivered as soon as it is, instead of lost.
+        # Proactive alert delivery -- AlertGenerated (Milestone 8) and
+        # RiskEvent (Milestone 11) are the two event types meant to reach
+        # the user unprompted (everything else is command-driven, on
+        # demand). Subscribed here (construction time) rather than in
+        # setup_hook so an event generated before the gateway connection is
+        # fully up is still queued and delivered as soon as it is, instead
+        # of lost.
         self._event_bus.subscribe(AlertGenerated, self._on_alert_generated, name="discord_bot_alerts")
+        # RiskEvent is delivered independently of AlertGenerated -- never
+        # routed through the Event Prioritization Engine's watchlist-gated
+        # scoring (app/prioritization/engine.py), since most risk types are
+        # portfolio-wide (symbol=None) and would be silently suppressed by
+        # prioritization.watchlist_only's default. This is the literal
+        # "Discord ... can independently consume" RiskEvent, per the
+        # Milestone 11 spec -- a direct subscription, no intermediary
+        # approval gate, exactly like AlertGenerated's own delivery above.
+        self._event_bus.subscribe(RiskEvent, self._on_risk_event, name="discord_bot_risk_events")
 
     # ---------------------------------------------------------------- alerts
 
@@ -121,6 +138,48 @@ class TradingBot(discord.Client):
             log.info("alert_delivered", channel_id=channel_id, symbol=event.symbol, title=event.title, score=event.score)
         except Exception:
             log.exception("alert_delivery_failed", channel_id=channel_id, symbol=event.symbol)
+
+    async def _on_risk_event(self, event: RiskEvent) -> None:
+        # "info" is the common, healthy case (continuous monitoring, not
+        # continuous alerting) -- only an elevated or breached risk
+        # dimension is worth interrupting the user for. Never blocks
+        # anything; this is purely a notification decision, independent of
+        # whatever the Capital Protection Engine itself decided to publish.
+        if event.severity not in ("warning", "critical"):
+            return
+
+        cooldown_key = (event.risk_type, event.symbol or "")
+        now = datetime.now(timezone.utc)
+        last_sent = self._last_risk_alert_at.get(cooldown_key)
+        cooldown_seconds = self._settings.discord.risk_alert_cooldown_seconds
+        if last_sent is not None and (now - last_sent).total_seconds() < cooldown_seconds:
+            return
+
+        channel_id = self._settings.discord.alert_channel_id
+        if not channel_id:
+            log.info(
+                "risk_event_not_delivered",
+                detail="discord.alert_channel_id not configured -- risk event decided and logged only.",
+                risk_type=event.risk_type,
+                symbol=event.symbol,
+                severity=event.severity,
+            )
+            return
+
+        channel = self.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(int(channel_id))
+            except Exception:
+                log.exception("risk_alert_channel_fetch_failed", channel_id=channel_id, risk_type=event.risk_type)
+                return
+
+        try:
+            await channel.send(_format_risk_event(event))
+            self._last_risk_alert_at[cooldown_key] = now
+            log.info("risk_alert_delivered", channel_id=channel_id, risk_type=event.risk_type, symbol=event.symbol, severity=event.severity)
+        except Exception:
+            log.exception("risk_alert_delivery_failed", channel_id=channel_id, risk_type=event.risk_type)
 
     # ---------------------------------------------------------------- setup
 
@@ -256,4 +315,15 @@ def _format_alert(event: AlertGenerated) -> str:
     ]
     if breakdown_bits:
         lines.append(f"_Breakdown: {breakdown_bits}_")
+    return "\n".join(lines)
+
+
+def _format_risk_event(event: RiskEvent) -> str:
+    subject = f"**{event.symbol}**" if event.symbol else "**Portfolio-wide**"
+    label = "BREACH" if event.severity == "critical" else "WARNING"
+    threshold_bit = f" / limit {event.threshold:.2f}" if event.threshold is not None else ""
+    lines = [
+        f"{subject} — capital protection {label}: {event.risk_type} _(profile: {event.profile_name})_",
+        f"{event.message} _(value {event.value:.2f}{threshold_bit})_",
+    ]
     return "\n".join(lines)

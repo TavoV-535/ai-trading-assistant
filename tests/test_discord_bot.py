@@ -36,10 +36,10 @@ async def test_bot_registers_help_ping_analyze_and_scan_commands(event_bus, sett
     bot = TradingBot(settings, event_bus, registry)
     registered = bot.register_command_plugins()
 
-    assert sorted(registered) == ["analyze", "journal", "ping", "scan", "watchlist"]
+    assert sorted(registered) == ["analyze", "journal", "ping", "risk", "scan", "watchlist"]
 
     tree_commands = sorted(c.name for c in bot.tree.get_commands())
-    assert tree_commands == ["analyze", "help", "journal", "ping", "scan", "watchlist"]
+    assert tree_commands == ["analyze", "help", "journal", "ping", "risk", "scan", "watchlist"]
 
     await registry.shutdown_all()
 

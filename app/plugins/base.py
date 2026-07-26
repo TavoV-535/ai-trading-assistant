@@ -31,6 +31,7 @@ from app.event_bus.bus import EventBus
 
 if TYPE_CHECKING:
     from app.aggregation.aggregator import EvidenceAggregator
+    from app.capital_protection.engine import CapitalProtectionEngine
     from app.context.engine import MarketContextEngine
     from app.journal.engine import TradingJournal
     from app.marketdata.service import MarketDataService
@@ -102,19 +103,25 @@ class PluginContext:
     ``/watchlist`` needs the *current* ranked watchlist on demand, not
     just whenever the next ``SymbolProfileUpdated`` happens to fire; and
     (Milestone 10) ``/journal`` needs the Trading Journal's *current*
-    enriched entries for a symbol on demand. A plugin may read from these
-    (``.snapshot()``, ``.analyze()``, ``.matched_strategies_for()``,
-    ``.fetch()``, ``.plugins``, ``.ranked_watchlist()``, ``.for_symbol()``,
-    etc.) but must never use them to mutate state directly, publish on
-    another system's behalf, or reach into a specific indicator plugin's
-    internals — evidence and events remain the only way to make something
-    happen (``trading_journal.add_note()`` is the one write-shaped
-    exception, and even that only ever works by publishing a
+    enriched entries for a symbol on demand, and (Milestone 11) ``/risk``
+    needs the Capital Protection Engine's *current* status snapshot on
+    demand. A plugin may read from these (``.snapshot()``, ``.analyze()``,
+    ``.matched_strategies_for()``, ``.fetch()``, ``.plugins``,
+    ``.ranked_watchlist()``, ``.for_symbol()``, ``.status()``, etc.) but
+    must never use them to mutate state directly, publish on another
+    system's behalf, or reach into a specific indicator plugin's internals
+    — evidence and events remain the only way to make something happen
+    (``trading_journal.add_note()`` and
+    ``capital_protection_engine.set_active_profile()`` are the two
+    write-shaped exceptions; the former only ever works by publishing a
     ``JournalCreated`` event the Journal then reacts to itself, exactly
-    like any other subscriber — see ``app/journal/engine.py``). They
-    default to ``None`` (most unit tests, and any future refactor, may not
-    supply them), so any plugin reading them must handle ``None``
-    gracefully instead of assuming they're always present.
+    like any other subscriber — see ``app/journal/engine.py`` — and the
+    latter only ever switches *which already-configured Risk Profile* is
+    active, never blocks anything or edits a limit in code — see
+    ``app/capital_protection/profiles.py``). They default to ``None``
+    (most unit tests, and any future refactor, may not supply them), so
+    any plugin reading them must handle ``None`` gracefully instead of
+    assuming they're always present.
     """
 
     event_bus: EventBus
@@ -128,6 +135,7 @@ class PluginContext:
     context_engine: "MarketContextEngine | None" = None
     portfolio_engine: "PortfolioIntelligenceEngine | None" = None
     trading_journal: "TradingJournal | None" = None
+    capital_protection_engine: "CapitalProtectionEngine | None" = None
 
 
 class PluginBase(ABC):

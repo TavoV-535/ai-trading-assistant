@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import Base
 from app.db.models import EventLog
-from app.event_bus.events import DecisionRecorded, Event, ReflectionGenerated
+from app.event_bus.events import DecisionRecorded, Event, ReflectionGenerated, RiskEvent
 from app.journal.models import JournalNote
 from app.logging import get_logger
 from app.reflection.models import ReflectionRecord
@@ -168,3 +168,31 @@ class EventLogRepository(Repository[EventLog]):
             if len(notes) >= limit:
                 break
         return notes
+
+    async def risk_events(
+        self, *, symbol: str | None = None, risk_type: str | None = None, limit: int = 100
+    ) -> list[RiskEvent]:
+        """The Capital Protection Engine's durable, unbounded history —
+        every ``RiskEvent`` ever published, reconstructed straight from
+        its already-persisted ``event_log`` row. Mirrors
+        :meth:`decision_records` exactly — same Python-side symbol
+        filtering, plus an optional further narrowing by ``risk_type``
+        (one of ``app.event_bus.events.RISK_TYPES``). Unlike
+        ``DecisionRecord``/``ReflectionRecord``, no separate query-facing
+        wrapper class exists — ``RiskEvent``'s own fields are already a
+        stable, self-contained read shape, so this reconstructs the event
+        itself rather than a parallel model."""
+        rows = await self.recent(event_type="RiskEvent", limit=max(limit * 5, limit))
+        events: list[RiskEvent] = []
+        for row in rows:
+            if symbol is not None and row.payload.get("symbol") != symbol:
+                continue
+            if risk_type is not None and row.payload.get("risk_type") != risk_type:
+                continue
+            event = RiskEvent.model_validate(
+                {**row.payload, "event_id": row.event_id, "timestamp": row.created_at, "source": row.source, "correlation_id": row.correlation_id}
+            )
+            events.append(event)
+            if len(events) >= limit:
+                break
+        return events
